@@ -10,7 +10,7 @@ setup(
     description="An intelligent tool to analyze and annotate Java codebases with meaningful comments",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/codecomprehender",
+    url="https://github.com/ZeevRispler/Codecomprehender",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     classifiers=[
