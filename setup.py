@@ -17,6 +17,7 @@ setup(
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "Topic :: Software Development :: Documentation",
+        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
@@ -36,7 +37,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "codecomprehender=main:main",
+            "codecomprehender=codecomprehender.src.main:main",
         ],
     },
 )

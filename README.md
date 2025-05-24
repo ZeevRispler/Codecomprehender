@@ -45,12 +45,13 @@ cd codecomprehender
 # Install dependencies
 pip install -r requirements.txt
 
-# Or install as a package
+# EITHER install as a package (recommended):
 pip install -e .
+# Then run directly:
+codecomprehender https://github.com/user/repo
 
-# Create and configure .env file
-cp .env.example .env
-# Edit .env with your OpenAI API key
+# OR run as a module without installing:
+# python -m codecomprehender https://github.com/user/repo
 ```
 
 ## Configuration
@@ -91,19 +92,28 @@ The priority order for API key configuration is:
 
 ### Basic Usage
 
-Analyze a local Java project:
+After installation with `pip install -e .`:
 ```bash
-python -m codecomprehender /path/to/java/project
+# Analyze a local Java project
+codecomprehender /path/to/java/project
+
+# Analyze a GitHub repository
+codecomprehender https://github.com/username/repo
 ```
 
-Analyze a GitHub repository:
+Or if running without installation:
 ```bash
-python -m codecomprehender https://github.com/username/repo
+# From the project directory
+python -m codecomprehender /path/to/java/project
 ```
 
 ### Command-Line Options
 
 ```bash
+# If installed with pip install -e .
+codecomprehender [SOURCE] [OPTIONS]
+
+# If running without installation
 python -m codecomprehender [SOURCE] [OPTIONS]
 
 Arguments:
@@ -123,14 +133,13 @@ Options:
 ### Examples
 
 ```bash
-# Analyze with custom output directory
+# If installed with pip
+codecomprehender https://github.com/spring-projects/spring-boot -o ./analyzed_output
+codecomprehender /path/to/project --architecture-only
+codecomprehender /path/to/project -c custom_config.yaml
+
+# If running without installation (from project directory)
 python -m codecomprehender https://github.com/spring-projects/spring-boot -o ./analyzed_output
-
-# Generate only architecture diagrams
-python -m codecomprehender /path/to/project --architecture-only
-
-# Use custom configuration
-python -m codecomprehender /path/to/project -c custom_config.yaml
 ```
 
 ## Configuration File
@@ -286,4 +295,9 @@ echo "1. Copy the code files to their respective locations"
 echo "2. Create .env file: cp .env.example .env"
 echo "3. Edit .env and add your OpenAI API key"
 echo "4. Install dependencies: pip install -r requirements.txt"
-echo "5. Run: python -m codecomprehender https://github.com/user/repo"
+echo "4. Run the tool:"
+echo "   # If installed with pip install -e .:"
+echo "   codecomprehender https://github.com/user/repo"
+echo "   "
+echo "   # OR without installation:"
+echo "   python -m codecomprehender https://github.com/user/repo"
