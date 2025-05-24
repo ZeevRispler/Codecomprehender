@@ -1,0 +1,40 @@
+# Default configuration for CodeComprehender
+
+# OpenAI settings
+openai_model: "gpt-40"
+temperature: 0.3
+max_tokens: 1000
+
+# Comment generation settings
+comment_style: "javadoc"
+include_inline_comments: true
+include_method_comments: true
+include_class_comments: true
+
+# Architecture settings
+diagram_format: "png"  # Options: png, svg, pdf
+include_private_members: false
+max_depth: 3
+
+# File handling settings
+file_suffix: "_commented"
+ignore_patterns:
+  - "*Test.java"
+  - "*TestCase.java"
+  - "*Generated.java"
+  - "*.tmp"
+  - "package-info.java"
+encoding: "utf-8"
+
+# Processing options
+max_file_size: 1048576  # 1MB in bytes
+batch_size: 10  # Number of files to process in parallel
+
+# Diagram styling
+diagram_theme:
+  package_color: "lightblue"
+  class_color: "lightblue"
+  interface_color: "lightyellow"
+  enum_color: "lightgreen"
+  font_name: "Arial"
+  font_size: 12
