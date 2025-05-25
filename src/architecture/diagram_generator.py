@@ -1,13 +1,6 @@
-"""
-Generate comprehensive architecture diagrams
-
-Creates class diagrams, dependency graphs, package overviews, and more.
-Uses graphviz to generate professional-looking architecture documentation.
-"""
-
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any, Set
 from collections import defaultdict
 
 try:

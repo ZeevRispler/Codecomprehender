@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from typing import List, Set
+from typing import List
 import fnmatch
 from src.utils.logger import setup_logger
 

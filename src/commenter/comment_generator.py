@@ -1,15 +1,8 @@
-"""
-AI-powered comment generation with async efficiency
-
-Handles multiple OpenAI API calls concurrently to speed up processing.
-Each file can have dozens of comments generated in parallel.
-"""
-
 import os
 import logging
 import re
 import asyncio
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
 from pathlib import Path
 from dataclasses import dataclass
 

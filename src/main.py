@@ -14,7 +14,6 @@ from pathlib import Path
 import tempfile
 import shutil
 import asyncio
-from functools import partial
 
 import click
 from dotenv import load_dotenv
