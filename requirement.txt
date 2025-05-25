@@ -1,26 +1,8 @@
-# Core dependencies for functionality
-click>=8.0.0
-openai>=1.0.0
-javalang>=0.13.0
-python-dotenv>=0.19.0
-
-# For configuration files
-pyyaml>=6.0
-
-# For multiprocessing progress bars (makes large projects bearable)
-tqdm>=4.60.0
-
-# For architecture diagrams (optional but recommended)
-graphviz>=0.20.0
-
-# Performance and async support
-aiohttp>=3.8.0  # For better async HTTP handling
-asyncio-throttle>=1.0.0  # Rate limiting for API calls
-
-# Development dependencies (optional)
-pytest>=7.0.0
+# Remove these unused dependencies:
+pyyaml>=6.0  # Not using YAML config anymore
+aiohttp>=3.8.0  # Not using aiohttp
+asyncio-throttle>=1.0.0  # Not implementing throttling
+pytest>=7.0.0  # Development dependencies
 black>=22.0.0
 flake8>=4.0.0
-
-# Optional: For better error reporting and debugging
-rich>=12.0.0  # Pretty console output
+rich>=12.0.0  # Not using rich console output
