@@ -39,15 +39,9 @@ public class UserService {
 ## Installation
 
 ```bash
-pip install codecomprehender
-```
-
-Or install from source:
-
-```bash
 git clone https://github.com/yourusername/codecomprehender.git
 cd codecomprehender
-pip install -e .
+pip install -r requirements.txt
 ```
 
 ## Quick Start
@@ -57,56 +51,35 @@ pip install -e .
    ```bash
    export OPENAI_API_KEY="your-key-here"
    ```
-3. Run it on your Java project:
+3. Run it on a GitHub repository:
    ```bash
-   codecomprehender /path/to/your/java/project
+   python -m src.main https://github.com/user/repo --output ./output
    ```
 
-That's it! You'll get a new folder with `_commented` versions of all your Java files.
+That's it! You'll get a new folder with `_commented` versions of all your Java files plus architecture diagrams.
 
-## Usage Examples
+## Usage
 
 ```bash
-# Local Java project
-codecomprehender ~/code/my-java-app
+# Basic usage - analyze a GitHub repo
+python -m src.main https://github.com/spring-projects/spring-boot --output ./spring-commented
 
-# GitHub repository
-codecomprehender https://github.com/spring-projects/spring-boot
-
-# Specify output directory
-codecomprehender ~/code/my-app -o ~/Desktop/commented-code
-codecomprehender ~/code/my-app --output ~/Desktop/commented-code
-
-# Use different AI model
-codecomprehender ~/code/my-app --model gpt-4
-
-# Control number of worker processes
-codecomprehender ~/code/my-app --workers 4
-
-# Skip diagram generation (faster)
-codecomprehender ~/code/my-app --comments-only
-
-# Only generate diagrams
-codecomprehender ~/code/my-app --diagrams-only
+# Use a different AI model (default is gpt-4o-mini)
+python -m src.main https://github.com/user/repo --output ./output --model gpt-4
 ```
 
-## Command Line Options
+## Options
 
 ```bash
-codecomprehender [SOURCE] [OPTIONS]
+python -m src.main <GITHUB_URL> --output <OUTPUT_DIR> [--model <MODEL>]
 
-Arguments:
-  SOURCE  Local path or GitHub repository URL
+Required:
+  GITHUB_URL           GitHub repository URL (https://github.com/user/repo)
+  --output DIR         Where to save the commented code and diagrams
 
-Options:
-  -o, --output PATH    Output directory for processed files
-  --api-key TEXT       OpenAI API key (overrides environment variable)
-  --model TEXT         OpenAI model to use (default: gpt-4o-mini)
-  -w, --workers INT    Number of worker processes for parallel processing
-  --comments-only      Generate only comments, skip architecture diagrams
-  --diagrams-only      Generate only architecture diagrams, skip comments
-  -v, --verbose        Show debug output and progress details
-  --help              Show help message
+Optional:
+  --model MODEL        OpenAI model to use (default: gpt-4o-mini)
+                       Options: gpt-4o-mini, gpt-4, gpt-3.5-turbo
 ```
 
 ## Requirements
@@ -114,7 +87,7 @@ Options:
 - Python 3.8+
 - OpenAI API key
 - Git (for cloning repositories)
-- Graphviz (optional, for architecture diagrams)
+- Graphviz (for architecture diagrams)
 
 ### Installing Graphviz
 
@@ -131,27 +104,58 @@ sudo apt-get install graphviz
 **Windows:**
 Download from https://graphviz.org/download/
 
-## How It Works
-
-1. **Parses** your Java files to understand the structure
-2. **Analyzes** classes, methods, and fields 
-3. **Generates** contextual comments using AI (in parallel for speed)
-4. **Creates** new files with `_commented` suffix
-5. **Preserves** your original code (never modifies it)
-
 ## Configuration
 
-Create a `.env` file in your project:
+Create a `.env` file in the project directory:
 
 ```env
 OPENAI_API_KEY=your-key-here
-OPENAI_MODEL=gpt-4o-mini
-CODECOMPREHENDER_MAX_WORKERS=4
 ```
 
-Or pass options via command line:
-
+Or set it as an environment variable:
 ```bash
-codecomprehender ~/code/app --api-key your-key --model gpt-4 --workers 8
+export OPENAI_API_KEY="your-key-here"
 ```
 
+## What You Get
+
+After running the tool, your output directory will contain:
+
+```
+output/
+├── src/                          # Commented Java files
+│   └── main/java/.../*_commented.java
+└── diagrams/                     # Architecture diagrams
+    ├── project_overview.png
+    ├── class_diagram.png
+    ├── dependency_graph.png
+    └── architecture_report.md
+```
+
+## How It Works
+
+1. **Clones** the GitHub repository
+2. **Analyzes** all Java files in parallel
+3. **Generates** contextual comments using AI
+4. **Creates** `_commented.java` versions of all files
+5. **Generates** architecture diagrams and analysis
+6. **Preserves** original code structure
+
+## Performance Features
+
+- **Multiprocessing**: Uses multiple CPU cores for speed
+- **Async API calls**: Generates multiple comments concurrently
+- **Smart filtering**: Skips test files and generated code automatically
+- **Progress tracking**: Shows real-time progress on large codebases
+
+## Limitations
+
+- Only works with GitHub repositories (public or private with access)
+- Some newer Java features (records, sealed classes) might be skipped
+- Generated comments should be reviewed before production use
+- Requires internet connection for OpenAI API calls
+- API costs scale with codebase size
+
+---
+
+**Note:** This tool generates AI comments that should be reviewed before committing to production code.

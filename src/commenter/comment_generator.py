@@ -1,8 +1,15 @@
+"""
+AI-powered comment generation with async efficiency
+
+Handles multiple OpenAI API calls concurrently to speed up processing.
+Each file can have dozens of comments generated in parallel.
+"""
+
 import os
 import logging
 import re
 import asyncio
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -79,6 +86,12 @@ class CommentGenerator:
         logger.debug(f"Generating {len(comment_tasks)} comments for {file_path.name}")
         completed_tasks = await self._generate_all_comments(comment_tasks)
 
+        # Print batching info to console (visible in multiprocessing)
+        if comment_tasks:
+            batch_size = 7
+            expected_batches = (len(comment_tasks) + batch_size - 1) // batch_size
+            print(f"  📦 {file_path.name}: {len(comment_tasks)} comments → {expected_batches} API call{'s' if expected_batches != 1 else ''}")
+
         # Insert the generated comments into the source code
         return self._insert_comments(source_lines, completed_tasks)
 
@@ -119,31 +132,141 @@ class CommentGenerator:
 
     async def _generate_all_comments(self, tasks: List[CommentTask]) -> List[Tuple[CommentTask, str]]:
         """
-        Generate all comments concurrently.
+        Generate all comments using batching for efficiency.
 
-        This is where the async magic happens - instead of waiting for each
-        API call sequentially, we fire them all off at once.
+        Instead of making individual API calls, we batch multiple comments
+        together to reduce API calls and latency.
         """
 
-        # Create async tasks for all comment generation
-        async_tasks = [
-            self._generate_single_comment(task)
-            for task in tasks
+        # Group tasks into batches of 6-8 for optimal API usage
+        batch_size = 7  # Sweet spot for token limits and efficiency
+        batches = [tasks[i:i+batch_size] for i in range(0, len(tasks), batch_size)]
+
+        logger.info(f"🚀 BATCHING: Processing {len(tasks)} comments in {len(batches)} API calls (batch size: {batch_size})")
+        logger.info(f"💰 Efficiency gain: ~{len(tasks)} individual calls → {len(batches)} batch calls ({100 - (len(batches)/len(tasks)*100):.0f}% fewer calls)")
+
+        completed = []
+
+        # Process each batch
+        for batch_num, batch in enumerate(batches, 1):
+            logger.info(f"📦 Batch {batch_num}/{len(batches)}: Processing {len(batch)} comments in 1 API call...")
+
+            try:
+                batch_results = await self._generate_batch_comments(batch)
+                completed.extend(batch_results)
+                logger.info(f"✅ Batch {batch_num} completed: {len(batch_results)}/{len(batch)} comments generated")
+            except Exception as e:
+                logger.warning(f"❌ Batch {batch_num} failed: {e}")
+                logger.info(f"🔄 Falling back to individual processing for batch {batch_num}...")
+
+                # Fallback to individual processing for this batch
+                individual_success = 0
+                for task in batch:
+                    try:
+                        individual_result = await self._generate_single_comment(task)
+                        if individual_result:
+                            completed.append((task, individual_result))
+                            individual_success += 1
+                    except Exception as individual_error:
+                        logger.warning(f"Failed individual comment for {task.element_type}: {individual_error}")
+
+                logger.info(f"🔄 Fallback completed: {individual_success}/{len(batch)} comments generated individually")
+
+        success_rate = (len(completed) / len(tasks)) * 100
+        logger.info(f"🎯 BATCHING SUMMARY: {len(completed)}/{len(tasks)} comments generated ({success_rate:.1f}% success rate)")
+        return completed
+
+    async def _generate_batch_comments(self, tasks: List[CommentTask]) -> List[Tuple[CommentTask, str]]:
+        """Generate multiple comments in a single API call"""
+
+        # Build the batch prompt
+        batch_prompt = self._build_batch_prompt(tasks)
+
+        logger.debug(f"📤 Sending batch request for {len(tasks)} comments...")
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.config.openai_model,
+                messages=[{"role": "user", "content": batch_prompt}],
+                temperature=self.config.temperature,
+                max_tokens=min(4000, sum(task.max_tokens for task in tasks))  # Reasonable limit
+            )
+
+            logger.debug(f"📥 Received batch response, parsing {len(tasks)} comments...")
+
+            # Parse the batch response
+            results = self._parse_batch_response(response.choices[0].message.content, tasks)
+
+            logger.debug(f"✨ Batch parsing successful: {len(results)} comments extracted")
+            return results
+
+        except Exception as e:
+            logger.debug(f"Batch API call failed: {e}")
+            raise
+
+    def _build_batch_prompt(self, tasks: List[CommentTask]) -> str:
+        """Build a prompt that requests multiple comments at once"""
+
+        prompt_parts = [
+            "Generate brief, professional comments for these Java code elements.",
+            "Return ONLY the comment text for each element in the exact order given.",
+            "Separate each comment with '---NEXT---' on its own line.",
+            "Keep comments concise and helpful.",
+            ""
         ]
 
-        # Wait for all to complete, but don't fail if some do
-        results = await asyncio.gather(*async_tasks, return_exceptions=True)
+        for i, task in enumerate(tasks, 1):
+            element_info = self._extract_element_info_from_prompt(task.prompt)
+            prompt_parts.append(f"{i}. {task.element_type.upper()}: {element_info}")
 
-        # Filter out failed results
-        completed = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.warning(f"Failed to generate {tasks[i].element_type} comment: {result}")
-            elif result:
-                completed.append((tasks[i], result))
+        prompt_parts.extend([
+            "",
+            "Format your response as:",
+            "Comment for element 1",
+            "---NEXT---",
+            "Comment for element 2",
+            "---NEXT---",
+            "Comment for element 3",
+            "(etc.)",
+            "",
+            "Generate the comments now:"
+        ])
 
-        logger.debug(f"Successfully generated {len(completed)}/{len(tasks)} comments")
-        return completed
+        return '\n'.join(prompt_parts)
+
+    def _extract_element_info_from_prompt(self, prompt: str) -> str:
+        """Extract key information from individual prompts for batching"""
+        lines = prompt.split('\n')
+
+        # Find the key information lines
+        info_lines = []
+        for line in lines:
+            if any(keyword in line for keyword in ['File:', 'Class:', 'Method:', 'Field:']):
+                info_lines.append(line.strip())
+            elif line.startswith('Package:') or line.startswith('Static:') or line.startswith('Visibility:'):
+                info_lines.append(line.strip())
+
+        return ' | '.join(info_lines[:3])  # Limit to avoid too long prompts
+
+    def _parse_batch_response(self, response_text: str, tasks: List[CommentTask]) -> List[Tuple[CommentTask, str]]:
+        """Parse the batched response and match comments to tasks"""
+
+        # Split response by separator
+        comment_parts = response_text.split('---NEXT---')
+
+        results = []
+        for i, task in enumerate(tasks):
+            if i < len(comment_parts):
+                raw_comment = comment_parts[i].strip()
+                if raw_comment:
+                    formatted_comment = self._format_comment(task, raw_comment)
+                    results.append((task, formatted_comment))
+                else:
+                    logger.debug(f"Empty comment received for {task.element_type}")
+            else:
+                logger.debug(f"No comment received for {task.element_type} (batch response too short)")
+
+        return results
 
     async def _generate_single_comment(self, task: CommentTask) -> Optional[str]:
         """Generate a single comment using OpenAI API"""

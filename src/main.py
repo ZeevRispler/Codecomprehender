@@ -14,6 +14,7 @@ from pathlib import Path
 import tempfile
 import shutil
 import asyncio
+from functools import partial
 
 import click
 from dotenv import load_dotenv
@@ -98,6 +99,34 @@ def process_single_file(file_info):
             # Parse the Java file
             parsed_file = parser.parse_file(java_file)
 
+            # Count elements that need comments
+            total_comments_needed = 0
+            if not parsed_file.classes:
+                worker_logger.info(f"📁 {java_file.name}: No classes found, skipping comments")
+                return True
+
+            for cls in parsed_file.classes:
+                if not cls.has_javadoc:
+                    total_comments_needed += 1  # Class comment
+
+                for method in cls.methods:
+                    if not method.is_constructor and not getattr(method, 'has_javadoc', False):
+                        total_comments_needed += 1
+
+                for field in cls.fields:
+                    if not (field.is_static and field.is_final) and not getattr(field, 'has_javadoc', False):
+                        total_comments_needed += 1
+
+            if total_comments_needed == 0:
+                worker_logger.info(f"📁 {java_file.name}: All elements already have comments, skipping")
+                return True
+
+            # Calculate expected batches
+            batch_size = 7
+            expected_batches = (total_comments_needed + batch_size - 1) // batch_size
+            worker_logger.info(
+                f"🚀 {java_file.name}: {total_comments_needed} comments → {expected_batches} batch{'es' if expected_batches != 1 else ''} (batch size: {batch_size})")
+
             # Generate comments using async OpenAI client
             async with CommentGenerator(config) as commenter:
                 commented_code = await commenter.add_comments(parsed_file, java_file)
@@ -116,7 +145,7 @@ def process_single_file(file_info):
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(commented_code)
 
-            worker_logger.debug(f"✓ Processed {java_file.name}")
+            worker_logger.info(f"✅ {java_file.name}: Completed with batching")
             return True
 
         except Exception as e:
@@ -313,51 +342,47 @@ class CodeComprehender:
 
 
 @click.command()
-@click.argument('source', required=True)
-@click.option('--output', '-o', help='Output directory')
-@click.option('--api-key', help='OpenAI API key')
-@click.option('--model', default='gpt-4o-mini', help='OpenAI model')
-@click.option('--workers', '-w', type=int, help=f'Number of worker processes (default: {MAX_WORKERS})')
-@click.option('--comments-only', is_flag=True, help='Skip architecture diagrams')
-@click.option('--diagrams-only', is_flag=True, help='Skip comment generation')
+@click.argument('github_url', required=True)
+@click.option('--output', '-o', 'output_dir', required=True, type=click.Path(),
+              help='Output directory for commented code and diagrams')
+@click.option('--model', default='gpt-4o-mini',
+              help='OpenAI model to use (gpt-4o-mini, gpt-4, gpt-3.5-turbo)')
 @click.option('--verbose', '-v', is_flag=True, help='Show debug output')
-def main(source, output, api_key, model, workers, comments_only, diagrams_only, verbose):
+def main(github_url, output_dir, model, verbose):
     """
-    Add AI-generated comments to Java code efficiently.
+    Add AI-generated comments to Java code from GitHub repositories.
 
-    Uses multiprocessing to handle large codebases quickly.
+    GITHUB_URL should be a GitHub repository URL like:
+    https://github.com/user/repository
 
-    SOURCE can be a local directory or GitHub repository URL.
+    Examples:
+      python -m src.main https://github.com/spring-projects/spring-boot --output ./spring-commented
+      python -m src.main https://github.com/user/repo --output ./output --model gpt-4
     """
 
-    # Set up logging
     logger = setup_logging(verbose)
 
-    # Override worker count if specified
-    global MAX_WORKERS
-    if workers:
-        MAX_WORKERS = max(1, workers)
-        logger.info(f"Using {MAX_WORKERS} workers (overridden)")
+    # Validate GitHub URL
+    if not github_url.startswith('https://github.com/'):
+        logger.error("Only GitHub repository URLs are supported")
+        logger.error("URL should be like: https://github.com/user/repository")
+        sys.exit(1)
 
     # Create config
     config = Config()
-
-    # Apply command line overrides
-    if api_key:
-        config.openai_api_key = api_key
     config.openai_model = model
-    config.skip_comments = diagrams_only
-    config.generate_diagrams = not comments_only
+    config.generate_diagrams = True  # Always generate diagrams
+    config.skip_comments = False  # Always generate comments
 
-    # Validate config
-    if not config.skip_comments and not config.openai_api_key:
-        logger.error("OpenAI API key required for comment generation!")
-        logger.error("Set OPENAI_API_KEY environment variable or use --api-key")
+    # Check if we have an API key
+    if not config.openai_api_key:
+        logger.error("OpenAI API key required!")
+        logger.error("Set OPENAI_API_KEY environment variable or create a .env file")
         sys.exit(1)
 
-    # Process the code
+    # Process the repository
     comprehender = CodeComprehender(config)
-    success = comprehender.process(source, output)
+    success = comprehender.process(github_url, output_dir)
 
     sys.exit(0 if success else 1)
 
