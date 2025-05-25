@@ -1,5 +1,3 @@
-"""File handling utilities for CodeComprehender"""
-
 import shutil
 from pathlib import Path
 from typing import List, Set

@@ -5,6 +5,7 @@ Handles multiple OpenAI API calls concurrently to speed up processing.
 Each file can have dozens of comments generated in parallel.
 """
 
+import os
 import logging
 import re
 import asyncio
@@ -16,7 +17,6 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class CommentTask:
     """Represents a single comment generation task"""
@@ -26,7 +26,6 @@ class CommentTask:
     indent: str = ""
     is_inline: bool = False
     max_tokens: int = 150
-
 
 class CommentGenerator:
     """Generate comments efficiently using async OpenAI calls"""
@@ -44,10 +43,10 @@ class CommentGenerator:
         self.client = AsyncOpenAI(
             api_key=self.config.openai_api_key,
             timeout=60.0,  # Longer timeout for reliability
-            max_retries=3  # Retry failed requests
+            max_retries=3   # Retry failed requests
         )
 
-        logger.debug(f"OpenAI client initialized (PID: {os.getpid() if 'os' in globals() else 'unknown'})")
+        logger.debug(f"OpenAI client initialized (PID: {os.getpid()})")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -67,7 +66,7 @@ class CommentGenerator:
 
         This is the main entry point - it:
         1. Analyzes what comments are needed
-        2. Generates all comments concurrently 
+        2. Generates all comments concurrently
         3. Inserts them into the source code
         """
         if not self.client:
@@ -95,30 +94,31 @@ class CommentGenerator:
         tasks = []
 
         # File-level comment
-        if not self._has_file_comment(source_lines):
+        if getattr(self.config, 'include_file_comments', True) and not self._has_file_comment(source_lines):
             prompt = self._build_file_prompt(parsed_file, file_path)
             insert_line = self._find_file_comment_location(source_lines)
             tasks.append(CommentTask("file", prompt, insert_line, "", False, 150))
 
         # Class/interface/enum comments
         for cls in parsed_file.classes:
-            if not cls.has_javadoc and self.config.use_javadoc:
+            if not cls.has_javadoc and self.config.use_javadoc and getattr(self.config, 'include_class_comments', True):
                 prompt = self._build_class_prompt(cls, parsed_file)
                 indent = self._get_line_indent(source_lines, cls.line_number - 1)
                 tasks.append(CommentTask("class", prompt, cls.line_number - 1, indent, False, 200))
 
                 # Method comments
-                for method in cls.methods:
-                    if not method.is_constructor:  # Skip constructors for now
-                        prompt = self._build_method_prompt(method, cls)
-                        indent = self._get_line_indent(source_lines, method.line_number - 1)
-                        tasks.append(CommentTask("method", prompt, method.line_number - 1, indent, False, 180))
+                if getattr(self.config, 'include_method_comments', True):
+                    for method in cls.methods:
+                        if not method.is_constructor and not getattr(method, 'has_javadoc', False):  # Skip constructors
+                            prompt = self._build_method_prompt(method, cls)
+                            indent = self._get_line_indent(source_lines, method.line_number - 1)
+                            tasks.append(CommentTask("method", prompt, method.line_number - 1, indent, False, 180))
 
                 # Field comments (inline style)
                 if self.config.add_inline_comments:
                     for field in cls.fields:
                         # Skip constants and obvious fields
-                        if not (field.is_static and field.is_final) and not self._is_obvious_field(field):
+                        if not (field.is_static and field.is_final) and not getattr(field, 'has_javadoc', False) and not self._is_obvious_field(field):
                             prompt = self._build_field_prompt(field, cls)
                             tasks.append(CommentTask("field", prompt, field.line_number, "", True, 50))
 
@@ -162,21 +162,46 @@ class CommentGenerator:
                 max_tokens=task.max_tokens
             )
 
-            comment = response.choices[0].message.content.strip()
-
-            # Basic formatting fixes
-            if task.is_inline:
-                if not comment.startswith('//'):
-                    comment = f"// {comment}"
-            else:
-                if not comment.startswith('/**'):
-                    comment = f"/**\n * {comment}\n */"
-
-            return comment
+            # Get raw comment content and format it
+            raw_comment = response.choices[0].message.content.strip()
+            return self._format_comment(task, raw_comment)
 
         except Exception as e:
             logger.debug(f"API call failed for {task.element_type}: {e}")
             return None
+
+    def _format_comment(self, task: CommentTask, raw_comment: str) -> str:
+        """Format the comment based on its type"""
+
+        if task.element_type == "file":
+            return f"""/**
+ * {raw_comment}
+ * 
+ * @author CodeComprehender
+ */"""
+
+        elif task.element_type == "class":
+            return f"""/**
+ * {raw_comment}
+ * 
+ * @author CodeComprehender
+ */"""
+
+        elif task.element_type == "method":
+            # Basic JavaDoc format
+            return f"""/**
+ * {raw_comment}
+ */"""
+
+        elif task.element_type == "field":
+            # Simple inline comment
+            if not raw_comment.startswith('//'):
+                return f"// {raw_comment}"
+            return raw_comment
+
+        else:
+            # Fallback
+            return f"// {raw_comment}"
 
     def _build_file_prompt(self, parsed_file, file_path: Path) -> str:
         """Build prompt for file-level comment"""
@@ -185,16 +210,15 @@ class CommentGenerator:
         if len(parsed_file.classes) > 3:
             class_summary += "..."
 
-        return f"""Write a brief JavaDoc comment for this Java file:
+        return f"""Write a brief description for this Java file:
 
 File: {file_path.name}
 Package: {parsed_file.package or 'default package'}
 Main classes: {class_summary}
 Total imports: {len(parsed_file.imports)}
 
-Explain what this file contains and its main purpose.
-Keep it concise and helpful.
-Return only the JavaDoc comment."""
+Explain what this file contains and its main purpose in 1-2 sentences.
+Return only the description text, no formatting."""
 
     def _build_class_prompt(self, cls, parsed_file) -> str:
         """Build prompt for class comment"""
@@ -207,7 +231,7 @@ Return only the JavaDoc comment."""
                 impl_list += "..."
             inheritance += f" implements {impl_list}"
 
-        return f"""Write a concise JavaDoc comment for this Java {cls.type}:
+        return f"""Write a brief description for this Java {cls.type}:
 
 {cls.type.title()}: {cls.name}{inheritance}
 Package: {parsed_file.package or 'default'}
@@ -215,35 +239,62 @@ Methods: {len(cls.methods)}
 Fields: {len(cls.fields)}
 Visibility: {cls.visibility}
 
-Explain the purpose and main responsibilities of this {cls.type}.
-Return only the JavaDoc comment."""
+Explain the purpose and main responsibilities of this {cls.type} in 1-2 sentences.
+Return only the description text, no formatting."""
 
     def _build_method_prompt(self, method, cls) -> str:
         """Build prompt for method comment"""
         params = ", ".join([f"{ptype} {pname}" for ptype, pname in method.parameters])
         signature = f"{method.visibility} {method.return_type} {method.name}({params})"
 
-        return f"""Write a JavaDoc comment for this Java method:
+        return f"""Write a brief description for this Java method:
 
 Method: {signature}
 Class: {cls.name}
 Static: {method.is_static}
+Parameters: {len(method.parameters)}
+Throws: {', '.join(getattr(method, 'throws', [])) if getattr(method, 'throws', []) else 'none'}
 
-Explain what this method does, include @param and @return if appropriate.
-Be practical and helpful.
-Return only the JavaDoc comment."""
+Explain what this method does in 1-2 sentences.
+Return only the description text, no formatting."""
 
     def _build_field_prompt(self, field, cls) -> str:
         """Build prompt for field comment"""
-        return f"""Write a brief inline comment for this Java field:
+        return f"""Write a very brief description for this Java field:
 
 Field: {field.visibility} {field.type} {field.name}
 Class: {cls.name}
 Static: {field.is_static}, Final: {field.is_final}
 
-Just explain what this field represents in a few words.
-Return only a single-line comment starting with //"""
+Explain what this field represents in 3-5 words.
+Return only the description text, no formatting."""
 
+    def _insert_comments(self, source_lines: List[str], completed_tasks: List[Tuple[CommentTask, str]]) -> str:
+        """Insert all generated comments into the source code"""
+
+        # Sort by line number in reverse order so we don't mess up line numbers
+        completed_tasks.sort(key=lambda x: x[0].insert_line, reverse=True)
+
+        modified_lines = source_lines.copy()
+
+        for task, formatted_comment in completed_tasks:
+            if task.is_inline:
+                # Inline comment - add to end of line
+                line_num = task.insert_line
+                if 0 <= line_num < len(modified_lines):
+                    original = modified_lines[line_num].rstrip()
+                    modified_lines[line_num] = f"{original}  {formatted_comment}"
+            else:
+                # Block comment - insert before target line
+                comment_lines = formatted_comment.split('\n')
+                indented_lines = [task.indent + line for line in comment_lines]
+
+                insert_at = task.insert_line
+                modified_lines[insert_at:insert_at] = indented_lines
+
+        return '\n'.join(modified_lines)
+
+    # Helper methods
     def _has_file_comment(self, source_lines: List[str]) -> bool:
         """Check if file already has a comment at the top"""
         for line in source_lines[:10]:
@@ -275,35 +326,6 @@ Return only a single-line comment starting with //"""
         """Skip fields that don't need comments"""
         obvious_names = {
             'id', 'name', 'value', 'count', 'size', 'length',
-            'index', 'flag', 'status', 'result'
+            'index', 'flag', 'status', 'result', 'data', 'item'
         }
         return field.name.lower() in obvious_names
-
-    def _insert_comments(self, source_lines: List[str], completed_tasks: List[Tuple[CommentTask, str]]) -> str:
-        """Insert all generated comments into the source code"""
-
-        # Sort by line number in reverse order so we don't mess up line numbers
-        completed_tasks.sort(key=lambda x: x[0].insert_line, reverse=True)
-
-        modified_lines = source_lines.copy()
-
-        for task, comment in completed_tasks:
-            if task.is_inline:
-                # Inline comment - add to end of line
-                line_num = task.insert_line
-                if 0 <= line_num < len(modified_lines):
-                    original = modified_lines[line_num].rstrip()
-                    modified_lines[line_num] = f"{original}  {comment}"
-            else:
-                # Block comment - insert before target line
-                comment_lines = comment.split('\n')
-                indented_lines = [task.indent + line for line in comment_lines]
-
-                insert_at = task.insert_line
-                modified_lines[insert_at:insert_at] = indented_lines
-
-        return '\n'.join(modified_lines)
-
-
-# Add os import at the top if it's missing
-import os

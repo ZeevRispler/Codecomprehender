@@ -1,9 +1,3 @@
-"""
-Simple GitHub repository cloning
-
-Just does the basic job of cloning repos.
-"""
-
 import subprocess
 import logging
 from pathlib import Path

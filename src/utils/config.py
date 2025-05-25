@@ -1,9 +1,3 @@
-"""
-Configuration management with all the efficiency knobs
-
-Includes settings for multiprocessing, async operations, and performance tuning.
-"""
-
 import os
 import yaml
 from dataclasses import dataclass, field
@@ -144,7 +138,6 @@ class Config:
             pass
 
         # Check filename patterns
-        filename = file_path.name
         for pattern in self.ignore_patterns:
             if file_path.match(pattern):
                 return True

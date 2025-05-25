@@ -1,5 +1,3 @@
-"""Data models for project structure"""
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Set, Optional

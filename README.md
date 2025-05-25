@@ -74,16 +74,39 @@ codecomprehender ~/code/my-java-app
 codecomprehender https://github.com/spring-projects/spring-boot
 
 # Specify output directory
+codecomprehender ~/code/my-app -o ~/Desktop/commented-code
 codecomprehender ~/code/my-app --output ~/Desktop/commented-code
 
 # Use different AI model
 codecomprehender ~/code/my-app --model gpt-4
+
+# Control number of worker processes
+codecomprehender ~/code/my-app --workers 4
 
 # Skip diagram generation (faster)
 codecomprehender ~/code/my-app --comments-only
 
 # Only generate diagrams
 codecomprehender ~/code/my-app --diagrams-only
+```
+
+## Command Line Options
+
+```bash
+codecomprehender [SOURCE] [OPTIONS]
+
+Arguments:
+  SOURCE  Local path or GitHub repository URL
+
+Options:
+  -o, --output PATH    Output directory for processed files
+  --api-key TEXT       OpenAI API key (overrides environment variable)
+  --model TEXT         OpenAI model to use (default: gpt-4o-mini)
+  -w, --workers INT    Number of worker processes for parallel processing
+  --comments-only      Generate only comments, skip architecture diagrams
+  --diagrams-only      Generate only architecture diagrams, skip comments
+  -v, --verbose        Show debug output and progress details
+  --help              Show help message
 ```
 
 ## Requirements
@@ -112,7 +135,7 @@ Download from https://graphviz.org/download/
 
 1. **Parses** your Java files to understand the structure
 2. **Analyzes** classes, methods, and fields 
-3. **Generates** contextual comments using AI
+3. **Generates** contextual comments using AI (in parallel for speed)
 4. **Creates** new files with `_commented` suffix
 5. **Preserves** your original code (never modifies it)
 
@@ -123,48 +146,12 @@ Create a `.env` file in your project:
 ```env
 OPENAI_API_KEY=your-key-here
 OPENAI_MODEL=gpt-4o-mini
+CODECOMPREHENDER_MAX_WORKERS=4
 ```
 
 Or pass options via command line:
 
 ```bash
-codecomprehender ~/code/app --api-key your-key --model gpt-4
+codecomprehender ~/code/app --api-key your-key --model gpt-4 --workers 8
 ```
 
-## Limitations
-
-- Works best with clean, compilable Java code
-- Some newer Java features (records, sealed classes) might be skipped
-- Generated comments are AI-generated and should be reviewed
-- Requires internet connection for OpenAI API calls
-
-## Development
-
-```bash
-git clone https://github.com/yourusername/codecomprehender.git
-cd codecomprehender
-pip install -e ".[dev]"
-
-# Run tests
-python -m pytest
-
-# Format code  
-black src/
-```
-
-## Contributing
-
-Pull requests welcome! Please:
-
-1. Keep it simple - this tool should be easy to use
-2. Add tests for new features
-3. Update documentation
-4. Follow the existing code style
-
-## License
-
-MIT License - see LICENSE file for details.
-
----
-
-**Note:** This tool generates AI comments that should be reviewed before committing to production code. The quality depends on your code structure and the AI model used.

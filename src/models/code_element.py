@@ -1,5 +1,3 @@
-"""Data models for code elements"""
-
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
