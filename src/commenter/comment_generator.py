@@ -1,302 +1,309 @@
-import openai
-import asyncio
+"""
+AI-powered comment generation with async efficiency
+
+Handles multiple OpenAI API calls concurrently to speed up processing.
+Each file can have dozens of comments generated in parallel.
+"""
+
+import logging
 import re
-import dataclasses
-import os  # For os.getpid() in debug logs
-from typing import List, Optional, Dict, Any, Tuple
+import asyncio
+from typing import List, Optional, Tuple, Dict, Any
+from pathlib import Path
+from dataclasses import dataclass
 
-# Adjust relative imports based on your project structure and execution method
-from ..utils.logger import setup_logger
-from ..parser.java_parser import ParsedFile, ParsedClass, ParsedMethod, ParsedField
-from ..utils.config import Config  # Assuming Config object is passed
+from openai import AsyncOpenAI
 
-logger = setup_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-@dataclasses.dataclass
+@dataclass
 class CommentTask:
-    element_key: str
+    """Represents a single comment generation task"""
+    element_type: str  # "file", "class", "method", "field"
     prompt: str
-    max_tokens: int
-    insert_at_line: int
-    indentation: str = ""
+    insert_line: int
+    indent: str = ""
     is_inline: bool = False
+    max_tokens: int = 150
 
 
 class CommentGenerator:
-    def __init__(self, config: Config):  # Expects a Config object or similar attribute provider
+    """Generate comments efficiently using async OpenAI calls"""
+
+    def __init__(self, config):
         self.config = config
-        self._async_client = None  # Internal client instance, initialized in __aenter__
+        self.client = None
 
     async def __aenter__(self):
-        """Initializes the async client when entering the context."""
-        logger.debug(f"CommentGenerator context __aenter__ called (PID: {os.getpid()})")
-        if not hasattr(self.config, 'openai_api_key') or not self.config.openai_api_key:
-            logger.warning(
-                f"OpenAI API key not configured in __aenter__ (PID: {os.getpid()}). API calls will fail if attempted.")
+        """Set up the async OpenAI client"""
+        if not self.config.openai_api_key:
+            logger.warning("No OpenAI API key - skipping comment generation")
             return self
 
-        client_args = {"api_key": self.config.openai_api_key}
-        if hasattr(self.config, 'openai_base_url') and self.config.openai_base_url:
-            client_args["base_url"] = self.config.openai_base_url
+        self.client = AsyncOpenAI(
+            api_key=self.config.openai_api_key,
+            timeout=60.0,  # Longer timeout for reliability
+            max_retries=3  # Retry failed requests
+        )
 
-        if hasattr(self.config, 'openai_timeout') and self.config.openai_timeout:
-            client_args["timeout"] = self.config.openai_timeout
-        if hasattr(self.config, 'openai_max_retries') and self.config.openai_max_retries:
-            client_args["max_retries"] = self.config.openai_max_retries
-
-        self._async_client = openai.AsyncOpenAI(**client_args)
-
-        logger.debug(
-            f"AsyncOpenAI client initialized in __aenter__ (PID: {os.getpid()}). Type: {type(self._async_client)}")
-        if self._async_client:
-            logger.debug(
-                f"Does self._async_client have 'aclose' in __aenter__? {hasattr(self._async_client, 'aclose')}")
-            logger.debug(f"Does self._async_client have 'close' in __aenter__? {hasattr(self._async_client, 'close')}")
+        logger.debug(f"OpenAI client initialized (PID: {os.getpid() if 'os' in globals() else 'unknown'})")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Closes the async client when exiting the context."""
-        logger.debug(f"CommentGenerator context __aexit__ called (PID: {os.getpid()})")
-        if self._async_client:
-            logger.debug(
-                f"Attempting to close client in __aexit__. Type: {type(self._async_client)} (PID: {os.getpid()})")
+        """Clean up the client properly"""
+        if self.client:
+            try:
+                await self.client.close()
+                logger.debug("OpenAI client closed")
+            except Exception as e:
+                logger.warning(f"Error closing OpenAI client: {e}")
+            finally:
+                self.client = None
 
-            closed_successfully = False
-            # Prioritize calling close() and awaiting it, as per user feedback it works.
-            if hasattr(self._async_client, 'close'):
-                try:
-                    await self._async_client.close()
-                    closed_successfully = True
-                except TypeError as te:
-                    logger.error(
-                        f"TypeError calling await self._async_client.close() (PID: {os.getpid()}): {te}. 'close' might be synchronous.")
-                    # Try synchronous call if await failed with TypeError
-                    try:
-                        self._async_client.close()
-                        logger.info(
-                            f"Synchronous self._async_client.close() called after TypeError (PID: {os.getpid()}).")
-                        closed_successfully = True
-                    except Exception as e_sync_close:
-                        logger.error(
-                            f"Error calling synchronous self._async_client.close() (PID: {os.getpid()}): {e_sync_close}")
-                except RuntimeError as e_runtime:
-                    if "Event loop is closed" in str(e_runtime):
-                        logger.warning(
-                            f"Caught 'Event loop is closed' during client.close() in __aexit__ (PID: {os.getpid()}).")
-                    else:
-                        logger.error(
-                            f"RuntimeError calling close() on AsyncOpenAI client in __aexit__ (PID: {os.getpid()}): {e_runtime}")
-                except Exception as e:
-                    logger.error(f"Error calling await self._async_client.close() (PID: {os.getpid()}): {e}")
+    async def add_comments(self, parsed_file, file_path: Path) -> str:
+        """
+        Add comments to a parsed Java file.
 
-            # Fallback to aclose if close was not present or failed (less likely now)
-            elif not closed_successfully and hasattr(self._async_client, 'aclose'):
-                logger.warning(
-                    f"Client does not have 'close' or it failed/wasn't primary. Trying 'aclose'. Calling await self._async_client.aclose() (PID: {os.getpid()}).")
-                try:
-                    await self._async_client.aclose()
-                    logger.debug(f"AsyncOpenAI client.aclose() completed (PID: {os.getpid()}).")
-                    closed_successfully = True
-                except RuntimeError as e_runtime:  # Catch specific error if it persists
-                    if "Event loop is closed" in str(e_runtime):
-                        logger.warning(
-                            f"Caught 'Event loop is closed' during client.aclose() in __aexit__ (PID: {os.getpid()}).")
-                    else:  # Re-raise other RuntimeErrors or handle as needed
-                        logger.error(
-                            f"RuntimeError calling aclose() on client in __aexit__ (PID: {os.getpid()}): {e_runtime}")
-                except Exception as e:  # Catch other exceptions during aclose
-                    logger.error(f"Generic error calling aclose() on client in __aexit__ (PID: {os.getpid()}): {e}")
-
-            if not closed_successfully:
-                logger.error(
-                    f"CRITICAL: self._async_client (type: {type(self._async_client)}) could not be closed properly via 'close' or 'aclose' in __aexit__ (PID: {os.getpid()}).")
-        else:
-            logger.debug(f"No async_client to close in __aexit__ (PID: {os.getpid()}).")
-        self._async_client = None
-
-    def _get_indentation(self, source_lines: List[str], line_number: int) -> str:
-        if 0 <= line_number < len(source_lines):
-            line = source_lines[line_number]
-            match = re.match(r'^(\s*)', line)
-            return match.group(1) if match else ''
-        return ''
-
-    async def _generate_single_comment_text_async(self, prompt: str, max_tokens: int, element_key_for_log: str) -> \
-    Optional[str]:
-        if not self._async_client:
-            logger.error(
-                f"OpenAI client not available for {element_key_for_log}. Cannot generate comment (PID: {os.getpid()}).")
-            return None
-        try:
-            openai_model = getattr(self.config, 'openai_model', 'gpt-3.5-turbo')
-            temperature = getattr(self.config, 'temperature', 0.3)
-            config_max_tokens = getattr(self.config, 'max_tokens', 1000)
-
-            response = await self._async_client.chat.completions.create(
-                model=openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=min(max_tokens, config_max_tokens)
-            )
-            comment_text = response.choices[0].message.content.strip()
-
-            if "JavaDoc file-level comment" in prompt:
-                if not comment_text.startswith("/**"): comment_text = f"/**\n * {comment_text}\n */"
-            elif "JavaDoc comment for this Java" in prompt:
-                if not comment_text.startswith("/**"): comment_text = f"/**\n * {comment_text}\n */"
-            elif "inline comment for this Java field" in prompt:
-                if not comment_text.startswith("//"): comment_text = f"// {comment_text}"
-            return comment_text
-        except Exception as e:
-            logger.error(
-                f"Error generating single comment for {element_key_for_log} (PID: {os.getpid()}) (prompt: '{prompt[:70]}...'): {e}")
-            return None
-
-    def _has_file_comment(self, source_lines: List[str]) -> bool:
-        for i, line in enumerate(source_lines):
-            stripped_line = line.strip()
-            if not stripped_line: continue
-            if stripped_line.startswith("package ") or stripped_line.startswith("import "): return False
-            if stripped_line.startswith("/**") or stripped_line.startswith("/*"): return True
-            if stripped_line.startswith("//") and i < 5: continue
-            if "class " in stripped_line or "interface " in stripped_line or "enum " in stripped_line: return False
-            if i > 10 and stripped_line: return False
-        return False
-
-    def _build_file_prompt(self, parsed_file: ParsedFile, file_path) -> str:
-        return f"""Generate a concise JavaDoc file-level comment for this Java file:
-File: {file_path.name}
-Package: {parsed_file.package_name or 'N/A'}
-Classes: {', '.join(cls.name for cls in parsed_file.classes[:3])}{'...' if len(parsed_file.classes) > 3 else ''}
-Main imports: {', '.join(parsed_file.imports[:5])}{'...' if len(parsed_file.imports) > 5 else ''}
-The comment should explain the file's purpose and main functionality. Return ONLY the JavaDoc comment, no explanations."""
-
-    def _build_class_prompt(self, parsed_class: ParsedClass, parsed_file: ParsedFile) -> str:
-        return f"""Generate a concise JavaDoc comment for this Java {parsed_class.type}:
-Name: {parsed_class.name}
-Package: {parsed_file.package_name or 'N/A'}
-Visibility: {parsed_class.visibility}
-Extends: {parsed_class.extends or 'None'}
-Implements: {', '.join(parsed_class.implements[:3]) if parsed_class.implements else 'None'}{'...' if parsed_class.implements and len(parsed_class.implements) > 3 else ''}
-Key methods: {', '.join(m.name for m in parsed_class.methods[:3])}{'...' if len(parsed_class.methods) > 3 else ''}
-Key fields: {', '.join(f.name for f in parsed_class.fields[:3])}{'...' if len(parsed_class.fields) > 3 else ''}
-The comment should explain the class's purpose, responsibilities, and key features. Return ONLY the JavaDoc comment, no explanations."""
-
-    def _build_method_prompt(self, method: ParsedMethod, parsed_class: ParsedClass) -> str:
-        params_str = ", ".join(f"{ptype} {pname}" for ptype, pname in method.parameters)
-        return f"""Generate a concise JavaDoc comment for this Java method:
-Class: {parsed_class.name}
-Method Signature: {method.visibility} {'static ' if method.is_static else ''}{method.return_type} {method.name}({params_str}){' throws ' + ', '.join(method.throws) if method.throws else ''}
-Abstract: {method.is_abstract}
-Method Body Snippet (max 100 chars): {method.body[:100] if method.body else "N/A"}
-The comment should explain what the method does, its parameters (@param TypeName ParameterName - Description), return value (@return ReturnType - Description), and any exceptions (@throws ExceptionType - Description). Use proper JavaDoc format. Return ONLY the JavaDoc comment, no explanations."""
-
-    def _build_field_prompt(self, field: ParsedField, parsed_class: ParsedClass) -> str:
-        return f"""Generate a very brief inline comment for this Java field:
-Class: {parsed_class.name}
-Field Declaration: {field.visibility} {'static ' if field.is_static else ''}{'final ' if field.is_final else ''}{field.type} {field.name};
-Initial Value Snippet (max 50 chars): {field.initial_value[:50] if field.initial_value else "N/A"}
-Return ONLY a brief inline comment (starting with //) explaining the field's purpose. Keep it under 15 words."""
-
-    async def generate_comments_async(self, parsed_file: ParsedFile, file_path) -> str:
-        if not self._async_client:
-            logger.warning(
-                f"Cannot generate comments for {file_path.name}, OpenAI client not properly initialized (PID: {os.getpid()}).")
+        This is the main entry point - it:
+        1. Analyzes what comments are needed
+        2. Generates all comments concurrently 
+        3. Inserts them into the source code
+        """
+        if not self.client:
+            logger.debug(f"No OpenAI client - returning original code for {file_path.name}")
             return parsed_file.source_code
 
         source_lines = parsed_file.source_code.split('\n')
-        comment_tasks_defs: List[CommentTask] = []
 
-        file_comment_insert_line = 0
-        found_package_or_import_or_class = False
-        for idx, line_content in enumerate(source_lines):
-            stripped = line_content.strip();
-            if not stripped: continue
-            if stripped.startswith("package "):
-                file_comment_insert_line = idx + 1; found_package_or_import_or_class = True
-            elif stripped.startswith("import ") or \
-                    any(stripped.startswith(prefix) for prefix in
-                        ["public class", "class ", "public interface", "interface ", "public enum", "enum "]):
-                if not found_package_or_import_or_class: file_comment_insert_line = idx
-                found_package_or_import_or_class = True;
-                break
-            elif stripped and not stripped.startswith("//") and not stripped.startswith("/*"):
-                if not found_package_or_import_or_class: file_comment_insert_line = idx
-                found_package_or_import_or_class = True;
-                break
-            if idx > 20 and not found_package_or_import_or_class: break
+        # Build list of all comments we want to generate
+        comment_tasks = self._plan_comments(parsed_file, source_lines, file_path)
 
-        include_file_level_comment = getattr(self.config, 'include_class_comments', True)
-        include_class_comments_flag = getattr(self.config, 'include_class_comments', True)
-        include_method_comments_flag = getattr(self.config, 'include_method_comments', True)
-        include_inline_comments_flag = getattr(self.config, 'include_inline_comments', True)
+        if not comment_tasks:
+            logger.debug(f"No comments needed for {file_path.name}")
+            return parsed_file.source_code
 
-        if include_file_level_comment and not self._has_file_comment(source_lines):
-            file_prompt = self._build_file_prompt(parsed_file, file_path)
-            comment_tasks_defs.append(CommentTask(element_key="file_comment", prompt=file_prompt, max_tokens=200,
-                                                  insert_at_line=file_comment_insert_line, indentation=""))
+        # Generate all comments concurrently - this is the key efficiency gain
+        logger.debug(f"Generating {len(comment_tasks)} comments for {file_path.name}")
+        completed_tasks = await self._generate_all_comments(comment_tasks)
 
-        for p_class in parsed_file.classes:
-            class_insert_line = p_class.line_number - 1 if p_class.line_number > 0 else 0
-            class_indent = self._get_indentation(source_lines, class_insert_line)
-            if include_class_comments_flag and not p_class.documentation:
-                class_prompt = self._build_class_prompt(p_class, parsed_file)
-                comment_tasks_defs.append(
-                    CommentTask(element_key=f"class_{p_class.name}", prompt=class_prompt, max_tokens=300,
-                                insert_at_line=class_insert_line, indentation=class_indent))
+        # Insert the generated comments into the source code
+        return self._insert_comments(source_lines, completed_tasks)
 
-            if include_method_comments_flag:
-                for method in p_class.methods:
-                    if not method.documentation:
-                        method_insert_line = method.line_number - 1 if method.line_number > 0 else 0
-                        method_indent = self._get_indentation(source_lines, method_insert_line)
-                        method_prompt = self._build_method_prompt(method, p_class)
-                        comment_tasks_defs.append(
-                            CommentTask(element_key=f"method_{p_class.name}_{method.name}", prompt=method_prompt,
-                                        max_tokens=250, insert_at_line=method_insert_line, indentation=method_indent))
+    def _plan_comments(self, parsed_file, source_lines: List[str], file_path: Path) -> List[CommentTask]:
+        """Figure out what comments we need to generate"""
+        tasks = []
 
-            if include_inline_comments_flag:
-                for field in p_class.fields:
-                    if not field.documentation:
-                        field_insert_line = field.line_number - 1 if field.line_number > 0 else 0
-                        field_prompt = self._build_field_prompt(field, p_class)
-                        comment_tasks_defs.append(
-                            CommentTask(element_key=f"field_{p_class.name}_{field.name}", prompt=field_prompt,
-                                        max_tokens=60, insert_at_line=field_insert_line, is_inline=True))
+        # File-level comment
+        if not self._has_file_comment(source_lines):
+            prompt = self._build_file_prompt(parsed_file, file_path)
+            insert_line = self._find_file_comment_location(source_lines)
+            tasks.append(CommentTask("file", prompt, insert_line, "", False, 150))
 
-        if not comment_tasks_defs: return parsed_file.source_code
+        # Class/interface/enum comments
+        for cls in parsed_file.classes:
+            if not cls.has_javadoc and self.config.use_javadoc:
+                prompt = self._build_class_prompt(cls, parsed_file)
+                indent = self._get_line_indent(source_lines, cls.line_number - 1)
+                tasks.append(CommentTask("class", prompt, cls.line_number - 1, indent, False, 200))
 
-        async_api_tasks = [self._generate_single_comment_text_async(td.prompt, td.max_tokens, td.element_key) for td in
-                           comment_tasks_defs]
-        generated_texts_or_exceptions = await asyncio.gather(*async_api_tasks, return_exceptions=True)
+                # Method comments
+                for method in cls.methods:
+                    if not method.is_constructor:  # Skip constructors for now
+                        prompt = self._build_method_prompt(method, cls)
+                        indent = self._get_line_indent(source_lines, method.line_number - 1)
+                        tasks.append(CommentTask("method", prompt, method.line_number - 1, indent, False, 180))
 
-        comments_to_insert: List[Tuple[CommentTask, str]] = []
-        for i, result_or_exc in enumerate(generated_texts_or_exceptions):
-            task_def = comment_tasks_defs[i]
-            if isinstance(result_or_exc, Exception):
-                logger.error(
-                    f"Skipping comment for {task_def.element_key} due to generation error: {result_or_exc} (PID: {os.getpid()})")
-            elif result_or_exc:
-                comments_to_insert.append((task_def, result_or_exc))
+                # Field comments (inline style)
+                if self.config.add_inline_comments:
+                    for field in cls.fields:
+                        # Skip constants and obvious fields
+                        if not (field.is_static and field.is_final) and not self._is_obvious_field(field):
+                            prompt = self._build_field_prompt(field, cls)
+                            tasks.append(CommentTask("field", prompt, field.line_number, "", True, 50))
 
-        comments_to_insert.sort(key=lambda x: (x[0].insert_at_line, x[0].is_inline), reverse=True)
-        modified_lines = list(source_lines)
+        return tasks
 
-        for task_def, comment_text in comments_to_insert:
-            insert_line_idx = task_def.insert_at_line
-            if not (0 <= insert_line_idx <= len(modified_lines)):
-                logger.warning(
-                    f"Invalid insert line {insert_line_idx} for {task_def.element_key} (len_lines={len(modified_lines)}, PID: {os.getpid()}). Skipping.")
-                continue
-            if task_def.is_inline:
-                if 0 <= insert_line_idx < len(modified_lines):
-                    original_line = modified_lines[insert_line_idx]
-                    modified_lines[insert_line_idx] = original_line.rstrip() + f"  {comment_text.lstrip()}"
+    async def _generate_all_comments(self, tasks: List[CommentTask]) -> List[Tuple[CommentTask, str]]:
+        """
+        Generate all comments concurrently.
+
+        This is where the async magic happens - instead of waiting for each
+        API call sequentially, we fire them all off at once.
+        """
+
+        # Create async tasks for all comment generation
+        async_tasks = [
+            self._generate_single_comment(task)
+            for task in tasks
+        ]
+
+        # Wait for all to complete, but don't fail if some do
+        results = await asyncio.gather(*async_tasks, return_exceptions=True)
+
+        # Filter out failed results
+        completed = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to generate {tasks[i].element_type} comment: {result}")
+            elif result:
+                completed.append((tasks[i], result))
+
+        logger.debug(f"Successfully generated {len(completed)}/{len(tasks)} comments")
+        return completed
+
+    async def _generate_single_comment(self, task: CommentTask) -> Optional[str]:
+        """Generate a single comment using OpenAI API"""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.config.openai_model,
+                messages=[{"role": "user", "content": task.prompt}],
+                temperature=self.config.temperature,
+                max_tokens=task.max_tokens
+            )
+
+            comment = response.choices[0].message.content.strip()
+
+            # Basic formatting fixes
+            if task.is_inline:
+                if not comment.startswith('//'):
+                    comment = f"// {comment}"
             else:
-                comment_block_lines = comment_text.split('\n')
-                indented_comment_block = [(task_def.indentation + line).rstrip() for line in comment_block_lines]
-                modified_lines = modified_lines[:insert_line_idx] + indented_comment_block + modified_lines[
-                                                                                             insert_line_idx:]
+                if not comment.startswith('/**'):
+                    comment = f"/**\n * {comment}\n */"
+
+            return comment
+
+        except Exception as e:
+            logger.debug(f"API call failed for {task.element_type}: {e}")
+            return None
+
+    def _build_file_prompt(self, parsed_file, file_path: Path) -> str:
+        """Build prompt for file-level comment"""
+        classes = [cls.name for cls in parsed_file.classes[:3]]
+        class_summary = ", ".join(classes)
+        if len(parsed_file.classes) > 3:
+            class_summary += "..."
+
+        return f"""Write a brief JavaDoc comment for this Java file:
+
+File: {file_path.name}
+Package: {parsed_file.package or 'default package'}
+Main classes: {class_summary}
+Total imports: {len(parsed_file.imports)}
+
+Explain what this file contains and its main purpose.
+Keep it concise and helpful.
+Return only the JavaDoc comment."""
+
+    def _build_class_prompt(self, cls, parsed_file) -> str:
+        """Build prompt for class comment"""
+        inheritance = ""
+        if cls.extends:
+            inheritance += f" extends {cls.extends}"
+        if cls.implements:
+            impl_list = ", ".join(cls.implements[:2])
+            if len(cls.implements) > 2:
+                impl_list += "..."
+            inheritance += f" implements {impl_list}"
+
+        return f"""Write a concise JavaDoc comment for this Java {cls.type}:
+
+{cls.type.title()}: {cls.name}{inheritance}
+Package: {parsed_file.package or 'default'}
+Methods: {len(cls.methods)}
+Fields: {len(cls.fields)}
+Visibility: {cls.visibility}
+
+Explain the purpose and main responsibilities of this {cls.type}.
+Return only the JavaDoc comment."""
+
+    def _build_method_prompt(self, method, cls) -> str:
+        """Build prompt for method comment"""
+        params = ", ".join([f"{ptype} {pname}" for ptype, pname in method.parameters])
+        signature = f"{method.visibility} {method.return_type} {method.name}({params})"
+
+        return f"""Write a JavaDoc comment for this Java method:
+
+Method: {signature}
+Class: {cls.name}
+Static: {method.is_static}
+
+Explain what this method does, include @param and @return if appropriate.
+Be practical and helpful.
+Return only the JavaDoc comment."""
+
+    def _build_field_prompt(self, field, cls) -> str:
+        """Build prompt for field comment"""
+        return f"""Write a brief inline comment for this Java field:
+
+Field: {field.visibility} {field.type} {field.name}
+Class: {cls.name}
+Static: {field.is_static}, Final: {field.is_final}
+
+Just explain what this field represents in a few words.
+Return only a single-line comment starting with //"""
+
+    def _has_file_comment(self, source_lines: List[str]) -> bool:
+        """Check if file already has a comment at the top"""
+        for line in source_lines[:10]:
+            stripped = line.strip()
+            if stripped.startswith(('/**', '/*')):
+                return True
+            elif stripped and not stripped.startswith('//'):
+                break
+        return False
+
+    def _find_file_comment_location(self, source_lines: List[str]) -> int:
+        """Find the best place to insert file comment"""
+        for i, line in enumerate(source_lines):
+            stripped = line.strip()
+            if stripped.startswith('package '):
+                return i + 1  # After package declaration
+            elif stripped and not stripped.startswith('//'):
+                return i  # Before first real code
+        return 0
+
+    def _get_line_indent(self, source_lines: List[str], line_num: int) -> str:
+        """Get indentation of a specific line"""
+        if 0 <= line_num < len(source_lines):
+            match = re.match(r'^(\s*)', source_lines[line_num])
+            return match.group(1) if match else ""
+        return ""
+
+    def _is_obvious_field(self, field) -> bool:
+        """Skip fields that don't need comments"""
+        obvious_names = {
+            'id', 'name', 'value', 'count', 'size', 'length',
+            'index', 'flag', 'status', 'result'
+        }
+        return field.name.lower() in obvious_names
+
+    def _insert_comments(self, source_lines: List[str], completed_tasks: List[Tuple[CommentTask, str]]) -> str:
+        """Insert all generated comments into the source code"""
+
+        # Sort by line number in reverse order so we don't mess up line numbers
+        completed_tasks.sort(key=lambda x: x[0].insert_line, reverse=True)
+
+        modified_lines = source_lines.copy()
+
+        for task, comment in completed_tasks:
+            if task.is_inline:
+                # Inline comment - add to end of line
+                line_num = task.insert_line
+                if 0 <= line_num < len(modified_lines):
+                    original = modified_lines[line_num].rstrip()
+                    modified_lines[line_num] = f"{original}  {comment}"
+            else:
+                # Block comment - insert before target line
+                comment_lines = comment.split('\n')
+                indented_lines = [task.indent + line for line in comment_lines]
+
+                insert_at = task.insert_line
+                modified_lines[insert_at:insert_at] = indented_lines
 
         return '\n'.join(modified_lines)
+
+
+# Add os import at the top if it's missing
+import os

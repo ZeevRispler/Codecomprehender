@@ -1,8 +1,26 @@
-click>=8.1.0
-openai>=1.0.0 # Ensure a version that supports AsyncOpenAI and httpx by default
+# Core dependencies for functionality
+click>=8.0.0
+openai>=1.0.0
 javalang>=0.13.0
+python-dotenv>=0.19.0
+
+# For configuration files
+pyyaml>=6.0
+
+# For multiprocessing progress bars (makes large projects bearable)
+tqdm>=4.60.0
+
+# For architecture diagrams (optional but recommended)
 graphviz>=0.20.0
-PyYAML>=6.0
-python-dotenv>=1.0.0
-colorama>=0.4.6 # Kept for consistency with original requirements
-tqdm>=4.65.0 # Recommended for progress bars with new multiprocessing setup
+
+# Performance and async support
+aiohttp>=3.8.0  # For better async HTTP handling
+asyncio-throttle>=1.0.0  # Rate limiting for API calls
+
+# Development dependencies (optional)
+pytest>=7.0.0
+black>=22.0.0
+flake8>=4.0.0
+
+# Optional: For better error reporting and debugging
+rich>=12.0.0  # Pretty console output

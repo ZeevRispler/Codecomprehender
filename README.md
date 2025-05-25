@@ -1,303 +1,170 @@
 # CodeComprehender
 
-An intelligent tool designed to analyze and annotate Java codebases with meaningful comments using OpenAI, helping teams quickly understand complex, undocumented code.
+Add AI-generated comments to Java code automatically. Uses OpenAI to create helpful JavaDoc comments and inline explanations.
 
-## Features
+## What It Does
 
-- **Automated Code Commenting** – Generate contextual comments explaining functions, classes, and logic within the codebase using OpenAI's GPT models
-- **Non-Intrusive Workflow** – Creates a duplicate of each file with appended comments (`*_commented.java`), ensuring the original code remains untouched
-- **GitHub Integration** – Clone and analyze repositories directly from GitHub URLs
-- **Architecture Visualization** – Generate package diagrams, class diagrams, and dependency graphs
-- **Comprehensive Analysis** – Identify patterns, dependencies, and potential circular dependencies
-- **Customizable** – Configure comment styles, diagram formats, and processing options
+Takes messy, undocumented Java code and adds useful comments:
+
+```java
+// Before
+public class UserService {
+    private UserRepository repo;
+    
+    public User findById(Long id) {
+        return repo.findById(id);
+    }
+}
+
+// After  
+/**
+ * Service class for managing user operations and data access.
+ * Handles business logic for user-related functionality.
+ */
+public class UserService {
+    private UserRepository repo;  // Repository for user data persistence
+    
+    /**
+     * Retrieves a user by their unique identifier.
+     * 
+     * @param id the unique user ID to search for
+     * @return User object if found, null otherwise
+     */
+    public User findById(Long id) {
+        return repo.findById(id);
+    }
+}
+```
 
 ## Installation
 
-### Prerequisites
+```bash
+pip install codecomprehender
+```
 
-- Python 3.8 or higher
-- Git (for cloning repositories)
-- Graphviz (for generating diagrams)
+Or install from source:
+
+```bash
+git clone https://github.com/yourusername/codecomprehender.git
+cd codecomprehender
+pip install -e .
+```
+
+## Quick Start
+
+1. Get an OpenAI API key from https://platform.openai.com/
+2. Set it as an environment variable:
+   ```bash
+   export OPENAI_API_KEY="your-key-here"
+   ```
+3. Run it on your Java project:
+   ```bash
+   codecomprehender /path/to/your/java/project
+   ```
+
+That's it! You'll get a new folder with `_commented` versions of all your Java files.
+
+## Usage Examples
+
+```bash
+# Local Java project
+codecomprehender ~/code/my-java-app
+
+# GitHub repository
+codecomprehender https://github.com/spring-projects/spring-boot
+
+# Specify output directory
+codecomprehender ~/code/my-app --output ~/Desktop/commented-code
+
+# Use different AI model
+codecomprehender ~/code/my-app --model gpt-4
+
+# Skip diagram generation (faster)
+codecomprehender ~/code/my-app --comments-only
+
+# Only generate diagrams
+codecomprehender ~/code/my-app --diagrams-only
+```
+
+## Requirements
+
+- Python 3.8+
 - OpenAI API key
+- Git (for cloning repositories)
+- Graphviz (optional, for architecture diagrams)
 
-### Install Graphviz
+### Installing Graphviz
+
+**Mac:**
+```bash
+brew install graphviz
+```
 
 **Ubuntu/Debian:**
 ```bash
 sudo apt-get install graphviz
 ```
 
-**macOS:**
-```bash
-brew install graphviz
-```
-
 **Windows:**
-Download and install from [Graphviz website](https://graphviz.org/download/)
+Download from https://graphviz.org/download/
 
-### Install CodeComprehender
+## How It Works
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/codecomprehender.git
-cd codecomprehender
-
-# Install dependencies
-pip install -r requirements.txt
-
-# EITHER install as a package (recommended):
-pip install -e .
-# Then run directly:
-codecomprehender https://github.com/user/repo
-
-# OR run as a module without installing:
-# python -m codecomprehender https://github.com/user/repo
-```
+1. **Parses** your Java files to understand the structure
+2. **Analyzes** classes, methods, and fields 
+3. **Generates** contextual comments using AI
+4. **Creates** new files with `_commented` suffix
+5. **Preserves** your original code (never modifies it)
 
 ## Configuration
 
-### Setting up API Keys
+Create a `.env` file in your project:
 
-1. **Create a `.env` file** in the project root:
-```bash
-cp .env.example .env
-```
-
-2. **Edit the `.env` file** with your OpenAI credentials:
 ```env
-OPENAI_API_KEY=your-openai-api-key-here
-
-# Optional: For Azure OpenAI or custom endpoints
-OPENAI_BASE_URL=https://your-custom-endpoint.openai.azure.com/
+OPENAI_API_KEY=your-key-here
+OPENAI_MODEL=gpt-4o-mini
 ```
 
-3. **Alternative methods**:
-   - Set environment variables directly:
-     ```bash
-     export OPENAI_API_KEY="your-api-key-here"
-     export OPENAI_BASE_URL="https://your-custom-endpoint.com/"  # Optional
-     ```
-   
-   - Pass as command-line arguments:
-     ```bash
-     python -m codecomprehender /path/to/project --api-key "your-key" --base-url "your-url"
-     ```
-
-The priority order for API key configuration is:
-1. Command-line arguments (`--api-key`, `--base-url`)
-2. `.env` file in the project root
-3. System environment variables
-
-## Usage
-
-### Basic Usage
-
-After installation with `pip install -e .`:
-```bash
-# Analyze a local Java project
-codecomprehender /path/to/java/project
-
-# Analyze a GitHub repository
-codecomprehender https://github.com/username/repo
-```
-
-Or if running without installation:
-```bash
-# From the project directory
-python -m codecomprehender /path/to/java/project
-```
-
-### Command-Line Options
+Or pass options via command line:
 
 ```bash
-# If installed with pip install -e .
-codecomprehender [SOURCE] [OPTIONS]
-
-# If running without installation
-python -m codecomprehender [SOURCE] [OPTIONS]
-
-Arguments:
-  SOURCE  Local path or GitHub repository URL
-
-Options:
-  -o, --output-dir PATH     Output directory for processed files
-  --api-key TEXT           OpenAI API key (overrides .env file)
-  --base-url TEXT          OpenAI base URL (overrides .env file)
-  -c, --config PATH        Configuration file path
-  --comments-only          Generate only comments, skip architecture diagrams
-  --architecture-only      Generate only architecture diagrams, skip comments
-  -v, --verbose           Enable verbose logging
-  --help                  Show this message and exit
+codecomprehender ~/code/app --api-key your-key --model gpt-4
 ```
 
-### Examples
+## Limitations
 
-```bash
-# If installed with pip
-codecomprehender https://github.com/spring-projects/spring-boot -o ./analyzed_output
-codecomprehender /path/to/project --architecture-only
-codecomprehender /path/to/project -c custom_config.yaml
-
-# If running without installation (from project directory)
-python -m codecomprehender https://github.com/spring-projects/spring-boot -o ./analyzed_output
-```
-
-## Configuration File
-
-Create a `config.yaml` file to customize behavior:
-
-```yaml
-# OpenAI settings
-openai_model: "gpt-4"
-temperature: 0.3
-max_tokens: 1000
-
-# Comment generation settings
-comment_style: "javadoc"
-include_inline_comments: true
-include_method_comments: true
-include_class_comments: true
-
-# Architecture settings
-diagram_format: "png"  # or "svg", "pdf"
-include_private_members: false
-max_depth: 3
-
-# File handling settings
-file_suffix: "_commented"
-ignore_patterns:
-  - "*Test.java"
-  - "*Generated.java"
-  - "*.tmp"
-encoding: "utf-8"
-```
-
-## Output Structure
-
-```
-output_directory/
-├── src/                          # Commented Java files
-│   └── main/
-│       └── java/
-│           └── com/
-│               └── example/
-│                   ├── App_commented.java
-│                   └── Service_commented.java
-├── architecture/                 # Generated diagrams
-│   ├── package_structure.png
-│   ├── class_diagram.png
-│   ├── dependency_graph.png
-│   └── statistics_report.md
-```
-
-## Project Structure
-
-```
-codecomprehender/
-├── src/
-│   ├── __init__.py
-│   ├── main.py                 # Entry point
-│   ├── parser/                 # Java parsing logic
-│   ├── commenter/              # AI comment generation
-│   ├── architecture/           # Diagram generation
-│   ├── utils/                  # Utilities
-│   └── models/                 # Data models
-├── tests/                      # Unit tests
-├── config/                     # Configuration files
-├── requirements.txt
-├── setup.py
-└── README.md
-```
+- Works best with clean, compilable Java code
+- Some newer Java features (records, sealed classes) might be skipped
+- Generated comments are AI-generated and should be reviewed
+- Requires internet connection for OpenAI API calls
 
 ## Development
 
-### Running Tests
-
 ```bash
-python -m pytest tests/
+git clone https://github.com/yourusername/codecomprehender.git
+cd codecomprehender
+pip install -e ".[dev]"
+
+# Run tests
+python -m pytest
+
+# Format code  
+black src/
 ```
-
-### Adding New Features
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-## Troubleshooting
-
-### Common Issues
-
-1. **OpenAI API Key Error**
-   - Ensure your API key is set correctly
-   - Check API key permissions and quotas
-
-2. **Graphviz Not Found**
-   - Ensure Graphviz is installed and in PATH
-   - Try `dot -V` to verify installation
-
-3. **Java Parse Errors**
-   - Ensure the code is valid Java
-   - Check for unsupported Java features
-
-4. **Memory Issues with Large Projects**
-   - Process packages separately
-   - Increase Python heap size
-   - Use `--architecture-only` or `--comments-only`
-
-## License
-
-MIT License - see LICENSE file for details
 
 ## Contributing
 
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
+Pull requests welcome! Please:
 
-## Acknowledgments
+1. Keep it simple - this tool should be easy to use
+2. Add tests for new features
+3. Update documentation
+4. Follow the existing code style
 
-- Uses `javalang` for Java parsing
-- Powered by OpenAI's GPT models
-- Visualization with Graphviz
+## License
+
+MIT License - see LICENSE file for details.
 
 ---
 
-# Project Initialization Script (init_project.sh)
-#!/bin/bash
-
-# Create project structure
-mkdir -p codecomprehender/src/{parser,commenter,architecture,utils,models}
-mkdir -p codecomprehender/{tests,config}
-
-# Create __init__.py files
-touch codecomprehender/src/__init__.py
-touch codecomprehender/src/parser/__init__.py
-touch codecomprehender/src/commenter/__init__.py
-touch codecomprehender/src/architecture/__init__.py
-touch codecomprehender/src/utils/__init__.py
-touch codecomprehender/src/models/__init__.py
-touch codecomprehender/tests/__init__.py
-
-# Create main entry point
-cat > codecomprehender/src/__main__.py << 'EOF'
-#!/usr/bin/env python3
-from .main import main
-
-if __name__ == '__main__':
-    main()
-EOF
-
-chmod +x codecomprehender/src/__main__.py
-
-echo "Project structure created successfully!"
-echo "Next steps:"
-echo "1. Copy the code files to their respective locations"
-echo "2. Create .env file: cp .env.example .env"
-echo "3. Edit .env and add your OpenAI API key"
-echo "4. Install dependencies: pip install -r requirements.txt"
-echo "4. Run the tool:"
-echo "   # If installed with pip install -e .:"
-echo "   codecomprehender https://github.com/user/repo"
-echo "   "
-echo "   # OR without installation:"
-echo "   python -m codecomprehender https://github.com/user/repo"
+**Note:** This tool generates AI comments that should be reviewed before committing to production code. The quality depends on your code structure and the AI model used.

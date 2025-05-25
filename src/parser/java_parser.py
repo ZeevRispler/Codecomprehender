@@ -1,501 +1,507 @@
-"""Java source code parser using javalang library"""
+"""
+Efficient Java source code parser
+
+Includes caching and optimizations for handling large codebases.
+Skips files that can't be parsed instead of crashing.
+"""
+
+import logging
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any, Set
+from functools import lru_cache
+import re
 
 import javalang
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
-from src.utils.logger import setup_logger
-from src.models.code_element import CodeElement, ElementType, Visibility
-from src.models.project_structure import ProjectStructure, Package, ClassInfo
 
-logger = setup_logger(__name__)
-
-
-@dataclass
-class ParsedFile:
-    """Represents a parsed Java file with its AST and metadata"""
-    file_path: Path
-    package_name: str
-    imports: List[str]
-    classes: List['ParsedClass']
-    tree: Optional[javalang.tree.CompilationUnit] = None
-    source_code: str = ""
-
-
-@dataclass
-class ParsedClass:
-    """Represents a parsed Java class"""
-    name: str
-    type: str  # class, interface, enum
-    visibility: str
-    extends: Optional[str] = None
-    implements: List[str] = field(default_factory=list)
-    fields: List['ParsedField'] = field(default_factory=list)
-    methods: List['ParsedMethod'] = field(default_factory=list)
-    inner_classes: List['ParsedClass'] = field(default_factory=list)
-    documentation: Optional[str] = None
-    line_number: int = 0
-
-
-@dataclass
-class ParsedMethod:
-    """Represents a parsed Java method"""
-    name: str
-    visibility: str
-    return_type: str
-    parameters: List[Tuple[str, str]]  # (type, name)
-    throws: List[str] = field(default_factory=list)
-    is_static: bool = False
-    is_abstract: bool = False
-    documentation: Optional[str] = None
-    line_number: int = 0
-    body: Optional[str] = None
-
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedField:
-    """Represents a parsed Java field"""
+    """A field in a Java class"""
     name: str
     type: str
-    visibility: str
+    visibility: str = "package"
     is_static: bool = False
     is_final: bool = False
-    initial_value: Optional[str] = None
-    documentation: Optional[str] = None
     line_number: int = 0
+    has_javadoc: bool = False
 
+@dataclass
+class ParsedMethod:
+    """A method in a Java class"""
+    name: str
+    return_type: str
+    visibility: str = "package"
+    parameters: List[tuple] = field(default_factory=list)  # (type, name) pairs
+    is_static: bool = False
+    is_constructor: bool = False
+    line_number: int = 0
+    has_javadoc: bool = False
+    throws: List[str] = field(default_factory=list)
+
+@dataclass
+class ParsedClass:
+    """A Java class, interface, or enum"""
+    name: str
+    type: str  # "class", "interface", "enum"
+    visibility: str = "package"
+    extends: Optional[str] = None
+    implements: List[str] = field(default_factory=list)
+    fields: List[ParsedField] = field(default_factory=list)
+    methods: List[ParsedMethod] = field(default_factory=list)
+    line_number: int = 0
+    has_javadoc: bool = False
+    dependencies: Set[str] = field(default_factory=set)
+
+@dataclass
+class ParsedFile:
+    """A parsed Java source file"""
+    file_path: Path
+    package: str = ""
+    imports: List[str] = field(default_factory=list)
+    classes: List[ParsedClass] = field(default_factory=list)
+    source_code: str = ""
+    parse_errors: List[str] = field(default_factory=list)
+
+    @property
+    def main_class(self) -> Optional[ParsedClass]:
+        """Try to find the main class (usually matches filename)"""
+        filename = self.file_path.stem
+
+        # Look for exact match first
+        for cls in self.classes:
+            if cls.name == filename:
+                return cls
+
+        # Return first public class
+        for cls in self.classes:
+            if cls.visibility == "public":
+                return cls
+
+        # Just return first class if any
+        return self.classes[0] if self.classes else None
+
+    @property
+    def is_parseable(self) -> bool:
+        """Check if the file was parsed successfully"""
+        return len(self.parse_errors) == 0
 
 class JavaParser:
-    """Parses Java source code files and extracts structure"""
+    """Efficient Java source file parser with caching"""
+
+    def __init__(self):
+        self.failed_files = []
+        self.parsed_count = 0
+        self.skipped_count = 0
+
+        # Cache for repeated parsing operations
+        self._type_name_cache = {}
 
     def parse_file(self, file_path: Path) -> ParsedFile:
-        """Parse a single Java file and extract its structure"""
+        """
+        Parse a single Java file efficiently.
+
+        Returns a ParsedFile even if parsing fails - the caller can
+        check is_parseable to see if it worked.
+        """
         try:
+            # Read the source code
             with open(file_path, 'r', encoding='utf-8') as f:
                 source_code = f.read()
 
-            # Parse the Java source code
+            # Quick pre-checks before expensive parsing
+            if self._should_skip_parsing(source_code, file_path):
+                self.skipped_count += 1
+                return ParsedFile(
+                    file_path=file_path,
+                    source_code=source_code,
+                    parse_errors=["Skipped - unsupported Java features"]
+                )
+
+            # Parse with javalang
             tree = javalang.parse.parse(source_code)
 
-            # Extract package name
-            package_name = tree.package.name if tree.package else ""
-
-            # Extract imports
-            imports = [self._format_import(imp) for imp in tree.imports]
-
-            # Extract classes
-            classes = self._extract_classes(tree, source_code)
-
-            return ParsedFile(
+            parsed_file = ParsedFile(
                 file_path=file_path,
-                package_name=package_name,
-                imports=imports,
-                classes=classes,
-                tree=tree,
+                package=self._extract_package(tree),
+                imports=self._extract_imports(tree),
+                classes=self._extract_classes(tree, source_code),
                 source_code=source_code
             )
 
+            # Add dependency information
+            self._analyze_dependencies(parsed_file)
+
+            self.parsed_count += 1
+            logger.debug(f"✓ Parsed {file_path.name}")
+            return parsed_file
+
         except Exception as e:
-            logger.error(f"Error parsing {file_path}: {e}")
-            raise
+            # Don't crash - return a basic parsed file
+            logger.debug(f"Parse failed for {file_path.name}: {e}")
+            self.failed_files.append(file_path)
 
-    def analyze_project_structure(self, project_path: Path) -> ProjectStructure:
-        """Analyze the entire project structure"""
-        packages: Dict[str, Package] = {}
-        all_classes: Dict[str, ClassInfo] = {}
-
-        # Find and parse all Java files
-        java_files = list(project_path.rglob("*.java"))
-
-        for java_file in java_files:
             try:
-                parsed = self.parse_file(java_file)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    source_code = f.read()
+            except:
+                source_code = ""
 
-                # Create or update package
-                if parsed.package_name not in packages:
-                    packages[parsed.package_name] = Package(
-                        name=parsed.package_name,
-                        classes=[],
-                        subpackages=set()
-                    )
+            return ParsedFile(
+                file_path=file_path,
+                source_code=source_code,
+                parse_errors=[str(e)]
+            )
 
-                # Add classes to package and global registry
+    def analyze_project(self, project_path: Path) -> Dict[str, Any]:
+        """
+        Analyze entire project structure efficiently.
+
+        Returns comprehensive project information for diagram generation.
+        """
+        java_files = list(project_path.rglob('*.java'))
+
+        all_classes = []
+        all_packages = set()
+        dependencies = {}
+        failed_files = []
+
+        logger.info(f"Analyzing {len(java_files)} Java files...")
+
+        # Parse all files
+        for java_file in java_files:
+            parsed = self.parse_file(java_file)
+
+            if parsed.is_parseable:
+                all_classes.extend(parsed.classes)
+                if parsed.package:
+                    all_packages.add(parsed.package)
+
+                # Collect dependencies
                 for cls in parsed.classes:
-                    class_info = ClassInfo(
-                        name=cls.name,
-                        full_name=f"{parsed.package_name}.{cls.name}" if parsed.package_name else cls.name,
-                        package=parsed.package_name,
-                        type=cls.type,
-                        extends=cls.extends,
-                        implements=cls.implements,
-                        methods=[m.name for m in cls.methods],
-                        fields=[f.name for f in cls.fields],
-                        dependencies=self._extract_dependencies(parsed, cls)
-                    )
-
-                    packages[parsed.package_name].classes.append(class_info)
-                    all_classes[class_info.full_name] = class_info
-
-            except Exception as e:
-                logger.error(f"Error analyzing {java_file}: {e}")
-                continue
+                    dependencies[cls.name] = list(cls.dependencies)
+            else:
+                failed_files.append(java_file)
 
         # Build package hierarchy
-        self._build_package_hierarchy(packages)
+        package_hierarchy = self._build_package_hierarchy(all_packages)
 
-        return ProjectStructure(
-            root_path=project_path,
-            packages=packages,
-            classes=all_classes
-        )
+        # Calculate some useful metrics
+        total_methods = sum(len(cls.methods) for cls in all_classes)
+        total_fields = sum(len(cls.fields) for cls in all_classes)
 
-    def _extract_classes(self, tree: javalang.tree.CompilationUnit, source_code: str) -> List[ParsedClass]:
-        """Extract all classes from the compilation unit"""
+        return {
+            'project_path': project_path,
+            'total_files': len(java_files),
+            'parsed_files': self.parsed_count,
+            'failed_files': len(failed_files),
+            'skipped_files': self.skipped_count,
+            'total_classes': len(all_classes),
+            'total_methods': total_methods,
+            'total_fields': total_fields,
+            'packages': sorted(all_packages),
+            'package_hierarchy': package_hierarchy,
+            'dependencies': dependencies,
+            'classes': all_classes,
+        }
+
+    @lru_cache(maxsize=1000)
+    def _should_skip_parsing(self, source_code: str, file_path: Path) -> bool:
+        """
+        Quick check for Java features that will cause javalang to fail.
+
+        This saves time by avoiding expensive parsing attempts on files
+        we know we can't handle.
+        """
+        # Features javalang can't handle
+        unsupported_features = [
+            'sealed class', 'sealed interface',
+            'record ', 'record(',  # Java records
+            'var ', # type inference
+            'switch (' + '.*->',  # Expression switches (regex)
+            'yield ',  # Switch expressions
+            'instanceof.*&&',  # Pattern matching
+        ]
+
+        source_lower = source_code.lower()
+
+        # Check for obvious unsupported features
+        for feature in unsupported_features:
+            if feature in source_lower:
+                logger.debug(f"Skipping {file_path.name} - contains '{feature}'")
+                return True
+
+        # Check for very new Java syntax patterns
+        if re.search(r'switch\s*\([^)]+\)\s*\{[^}]*->', source_code):
+            logger.debug(f"Skipping {file_path.name} - switch expressions")
+            return True
+
+        return False
+
+    def _extract_package(self, tree) -> str:
+        """Extract package name from AST"""
+        if tree.package:
+            return tree.package.name
+        return ""
+
+    def _extract_imports(self, tree) -> List[str]:
+        """Extract import statements efficiently"""
+        imports = []
+        for imp in tree.imports:
+            import_str = imp.path
+            if imp.static:
+                import_str = f"static {import_str}"
+            if imp.wildcard:
+                import_str += ".*"
+            imports.append(import_str)
+        return imports
+
+    def _extract_classes(self, tree, source_code: str) -> List[ParsedClass]:
+        """Extract all class declarations efficiently"""
         classes = []
+        source_lines = source_code.split('\n')
 
+        # Use javalang's filter to find all type declarations
         for path, node in tree.filter(javalang.tree.TypeDeclaration):
-            if isinstance(node, (javalang.tree.ClassDeclaration,
-                                 javalang.tree.InterfaceDeclaration,
-                                 javalang.tree.EnumDeclaration)):
-                parsed_class = self._parse_class(node, source_code)
-                classes.append(parsed_class)
+            try:
+                parsed_class = self._parse_class_node(node, source_lines)
+                if parsed_class:
+                    classes.append(parsed_class)
+            except Exception as e:
+                logger.debug(f"Skipping class {getattr(node, 'name', 'unknown')}: {e}")
+                continue
 
         return classes
 
-    def _parse_class(self, node: javalang.tree.TypeDeclaration, source_code: str, is_problem_file: bool = False,
-                     current_file_path: Path = None) -> ParsedClass:
-        class_name_for_log = "UNKNOWN_CLASS"
-        if hasattr(node, 'name'):
-            class_name_for_log = node.name
-        elif isinstance(node, str):
-            if is_problem_file:
-                logger.error(f"DEBUG: _parse_class received string node: {node} in {current_file_path}")
-            raise TypeError(f"_parse_class expected a TypeDeclaration node, got str: {node} for {current_file_path}")
-        else:  # Node is not a string but has no name
-            if is_problem_file:
-                logger.error(
-                    f"DEBUG: _parse_class received node with no name attribute. Type: {type(node)}, Path: {current_file_path}")
-            # Depending on how critical 'name' is, you might raise an error or try to assign a placeholder
-            # For now, we'll rely on class_name_for_log's default "UNKNOWN_CLASS" if node.name is missing
-            # but this situation indicates a potentially malformed AST node from javalang if it's a TypeDeclaration.
+    def _parse_class_node(self, node, source_lines: List[str]) -> Optional[ParsedClass]:
+        """Parse a single class/interface/enum node efficiently"""
+        if not hasattr(node, 'name'):
+            return None
 
-        if is_problem_file:
-            logger.info(
-                f"Parsing class details for: {class_name_for_log} (Node type: {type(node).__name__}) in {current_file_path}")
-
-        class_type = type(node).__name__.replace("Declaration", "").lower()
-
-        extends_value = None
-        implements_list = []
-
-        # Handle 'extends' for classes and interfaces
-        if hasattr(node, 'extends') and node.extends:
-            if class_type == 'class':
-                extends_node_or_list = node.extends
-                actual_extends_node = None
-
-                if is_problem_file:
-                    logger.info(
-                        f"DEBUG: Handling 'extends' for CLASS '{class_name_for_log}'. node.extends type: {type(extends_node_or_list)}, value: {str(extends_node_or_list)}")
-
-                if isinstance(extends_node_or_list, list):
-                    if extends_node_or_list:
-                        actual_extends_node = extends_node_or_list[0]
-                        if len(extends_node_or_list) > 1 and is_problem_file:
-                            logger.warning(
-                                f"Class '{class_name_for_log}' has 'extends' as a list with multiple items. Using the first: {str(actual_extends_node)}")
-                    elif is_problem_file:
-                        logger.warning(f"Class '{class_name_for_log}' has 'extends' as an empty list.")
-                else:
-                    actual_extends_node = extends_node_or_list
-
-                if actual_extends_node:
-                    if is_problem_file:
-                        logger.info(
-                            f"DEBUG: actual_extends_node for CLASS '{class_name_for_log}'. type: {type(actual_extends_node)}, value: {str(actual_extends_node)}")
-
-                    if hasattr(actual_extends_node, 'name'):
-                        extends_value = actual_extends_node.name
-                        if is_problem_file:
-                            logger.info(
-                                f"DEBUG: Successfully got extends_value='{extends_value}' for CLASS '{class_name_for_log}'")
-                    elif isinstance(actual_extends_node, str):
-                        if is_problem_file: logger.warning(
-                            f"Class '{class_name_for_log}' has 'extends' (actual_extends_node) as a string: {actual_extends_node}")
-                        extends_value = actual_extends_node
-                    else:
-                        if is_problem_file:
-                            logger.warning(
-                                f"Class '{class_name_for_log}' has 'extends' (actual_extends_node) of unexpected type (no .name attribute): {type(actual_extends_node)}. Value: {str(actual_extends_node)}. Attempting to stringify.")
-                        extends_value = str(actual_extends_node)  # Fallback to string representation
-
-            elif class_type == 'interface':
-                if is_problem_file:
-                    logger.info(
-                        f"DEBUG: Handling 'extends' for INTERFACE '{class_name_for_log}'. node.extends type: {type(node.extends)}, value: {str(node.extends)}")
-
-                extends_list_for_interface = node.extends
-                if isinstance(extends_list_for_interface, list):
-                    for item_idx, item_node in enumerate(extends_list_for_interface):
-                        if hasattr(item_node, 'name'):
-                            implements_list.append(
-                                item_node.name)  # Interfaces "extend" other interfaces, store in implements_list for ParsedClass
-                            if is_problem_file:
-                                logger.info(
-                                    f"DEBUG: INTERFACE '{class_name_for_log}' extends '{item_node.name}' (item #{item_idx})")
-                        elif isinstance(item_node, str):
-                            if is_problem_file: logger.warning(
-                                f"INTERFACE '{class_name_for_log}' extends item #{item_idx} as string: {item_node}")
-                            implements_list.append(item_node)
-                        else:
-                            if is_problem_file: logger.warning(
-                                f"INTERFACE '{class_name_for_log}' extends item #{item_idx} of unexpected type: {type(item_node)}. Value: {str(item_node)}. Attempting to stringify.")
-                            implements_list.append(str(item_node))  # Fallback
-                # Handle if node.extends for an interface is not a list (e.g. single interface extension)
-                elif hasattr(extends_list_for_interface, 'name'):  # Check if it's a single node with a name
-                    implements_list.append(extends_list_for_interface.name)
-                    if is_problem_file:
-                        logger.info(
-                            f"DEBUG: INTERFACE '{class_name_for_log}' extends single item '{extends_list_for_interface.name}'")
-                elif isinstance(extends_list_for_interface, str):
-                    if is_problem_file: logger.warning(
-                        f"INTERFACE '{class_name_for_log}' has single 'extends' as string: {extends_list_for_interface}")
-                    implements_list.append(extends_list_for_interface)
-                else:  # Fallback for single, non-list, non-named item
-                    if is_problem_file: logger.warning(
-                        f"INTERFACE '{class_name_for_log}' has single 'extends' of unexpected type (no .name): {type(extends_list_for_interface)}. Value {str(extends_list_for_interface)}. Attempting to stringify.")
-                    implements_list.append(str(extends_list_for_interface))
-
-        # Handle 'implements' for classes
-        if class_type == 'class' and hasattr(node, 'implements') and node.implements:
-            if is_problem_file:
-                logger.info(
-                    f"DEBUG: Handling 'implements' for CLASS '{class_name_for_log}'. node.implements type: {type(node.implements)}, value: {str(node.implements)}")
-
-            implements_node_list = node.implements
-            if isinstance(implements_node_list, list):
-                for item_idx, item_node in enumerate(implements_node_list):
-                    if hasattr(item_node, 'name'):
-                        implements_list.append(item_node.name)
-                    elif isinstance(item_node, str):
-                        if is_problem_file: logger.warning(
-                            f"Class '{class_name_for_log}' implements item #{item_idx} as string: {item_node}")
-                        implements_list.append(item_node)
-                    else:
-                        if is_problem_file: logger.warning(
-                            f"Class '{class_name_for_log}' implements item #{item_idx} of unexpected type: {type(item_node)}. Value: {str(item_node)}. Attempting to stringify.")
-                        implements_list.append(str(item_node))  # Fallback
-            else:  # Should be a list according to javalang grammar for class implements
-                if is_problem_file: logger.warning(
-                    f"Class '{class_name_for_log}' has 'implements' attribute that is not a list: {type(implements_node_list)}. Attempting to process as single item.")
-                if hasattr(implements_node_list, 'name'):
-                    implements_list.append(implements_node_list.name)
-                elif isinstance(implements_node_list, str):
-                    implements_list.append(implements_node_list)
-                else:
-                    implements_list.append(str(implements_node_list))
+        # Determine class type
+        class_type = type(node).__name__.lower().replace('declaration', '')
 
         parsed_class = ParsedClass(
-            name=class_name_for_log,
+            name=node.name,
             type=class_type,
             visibility=self._get_visibility(node.modifiers),
-            extends=extends_value,
-            implements=implements_list,
-            documentation=node.documentation,
-            line_number=node.position.line if node.position and hasattr(node.position, 'line') else 0
+            line_number=getattr(node.position, 'line', 0) if node.position else 0,
+            has_javadoc=bool(node.documentation)
         )
 
+        # Handle inheritance efficiently
+        self._parse_inheritance(node, parsed_class, class_type)
+
+        # Extract fields
         if hasattr(node, 'fields'):
-            for field_node in node.fields:
-                if not isinstance(field_node, str):
-                    parsed_class.fields.extend(
-                        self._parse_fields(field_node, is_problem_file, class_name_for_log, current_file_path))
-                elif is_problem_file:
-                    logger.error(
-                        f"DEBUG: Field node is a string: {field_node} in class {class_name_for_log} in {current_file_path}")
+            for field_decl in node.fields:
+                parsed_class.fields.extend(self._parse_field_declaration(field_decl))
 
+        # Extract methods
         if hasattr(node, 'methods'):
-            for method_node in node.methods:
-                if not isinstance(method_node, str):
-                    parsed_class.methods.append(
-                        self._parse_method(method_node, source_code, is_problem_file, class_name_for_log,
-                                           current_file_path))
-                elif is_problem_file:
-                    logger.error(
-                        f"DEBUG: Method node is a string: {method_node} in class {class_name_for_log} in {current_file_path}")
+            for method_decl in node.methods:
+                parsed_method = self._parse_method_declaration(method_decl)
+                if parsed_method:
+                    parsed_class.methods.append(parsed_method)
 
-        if hasattr(node, 'body'):  # For inner classes
-            for body_item in node.body:
-                if isinstance(body_item, (
-                javalang.tree.ClassDeclaration, javalang.tree.InterfaceDeclaration, javalang.tree.EnumDeclaration)):
-                    if not isinstance(body_item, str):
-                        # Pass 'is_problem_file' and 'current_file_path' for consistent debugging
-                        parsed_class.inner_classes.append(
-                            self._parse_class(body_item, source_code, is_problem_file, current_file_path))
-                    elif is_problem_file:
-                        logger.error(f"DEBUG: Inner class node is a string: {body_item} in {current_file_path}")
         return parsed_class
 
-    def _parse_fields(self, field_node: javalang.tree.FieldDeclaration, is_problem_file: bool = False,
-                      class_name_for_log: str = "UNKNOWN_CLASS", current_file_path: Path = None) -> List[ParsedField]:
+    def _parse_inheritance(self, node, parsed_class: ParsedClass, class_type: str):
+        """Parse inheritance relationships efficiently"""
+        # Handle extends
+        if hasattr(node, 'extends') and node.extends:
+            if class_type == 'class':
+                # Classes extend one class
+                extends_node = node.extends[0] if isinstance(node.extends, list) else node.extends
+                parsed_class.extends = getattr(extends_node, 'name', str(extends_node))
+            else:
+                # Interfaces can extend multiple interfaces
+                if isinstance(node.extends, list):
+                    parsed_class.implements = [
+                        getattr(e, 'name', str(e)) for e in node.extends
+                    ]
+                else:
+                    parsed_class.implements = [getattr(node.extends, 'name', str(node.extends))]
+
+        # Handle implements (for classes)
+        if hasattr(node, 'implements') and node.implements:
+            implements_list = [getattr(i, 'name', str(i)) for i in node.implements]
+            parsed_class.implements.extend(implements_list)
+
+    def _parse_field_declaration(self, field_decl) -> List[ParsedField]:
+        """Parse field declarations (can declare multiple fields)"""
         fields = []
-        # Ensure field_node is not a string and has expected attributes
-        if not hasattr(field_node, 'type') or not hasattr(field_node, 'declarators'):
-            if is_problem_file:
-                logger.error(
-                    f"DEBUG: field_node missing 'type' or 'declarators'. Type: {type(field_node)} in class {class_name_for_log} in {current_file_path}")
+
+        if not (hasattr(field_decl, 'type') and hasattr(field_decl, 'declarators')):
             return fields
 
-        field_type_name = self._get_type_name(field_node.type)
-        visibility = self._get_visibility(field_node.modifiers)
+        field_type = self._get_type_name(field_decl.type)
+        visibility = self._get_visibility(field_decl.modifiers)
+        is_static = 'static' in field_decl.modifiers
+        is_final = 'final' in field_decl.modifiers
+        has_javadoc = bool(field_decl.documentation)
+        line_num = getattr(field_decl.position, 'line', 0) if field_decl.position else 0
 
-        for decl_idx, declarator in enumerate(field_node.declarators):
-            if not hasattr(declarator, 'name'):
-                if is_problem_file:  # Or your current debug flag
-                    logger.error(
-                        f"DEBUG: declarator #{decl_idx} has no name. Type: {type(declarator)} in class {class_name_for_log} in {current_file_path}")
-                continue
+        for declarator in field_decl.declarators:
+            if hasattr(declarator, 'name'):
+                field = ParsedField(
+                    name=declarator.name,
+                    type=field_type,
+                    visibility=visibility,
+                    is_static=is_static,
+                    is_final=is_final,
+                    line_number=line_num,
+                    has_javadoc=has_javadoc
+                )
+                fields.append(field)
 
-            field_name = declarator.name
-
-            # CRITICAL LINE: Ensure 'type' and 'visibility' are correctly passed
-            field = ParsedField(
-                name=field_name,
-                type=field_type_name,  # MUST BE PRESENT
-                visibility=visibility,  # MUST BE PRESENT
-                is_static='static' in field_node.modifiers,
-                is_final='final' in field_node.modifiers,
-                documentation=field_node.documentation,
-                # This should be field_node.documentation not declarator.documentation
-                line_number=field_node.position.line if field_node.position and hasattr(field_node.position,
-                                                                                        'line') else 0
-                # initial_value is not being parsed here, which is fine if it's optional
-            )
-            fields.append(field)
         return fields
 
-    def _parse_method(self, method_node: javalang.tree.MethodDeclaration, source_code: str,
-                      is_problem_file: bool = False, class_name_for_log: str = "UNKNOWN_CLASS",
-                      current_file_path: Path = None) -> ParsedMethod:
-        # Ensure method_node is not a string and has expected attributes
-        if not hasattr(method_node, 'name') or not hasattr(method_node, 'parameters'):  # Add other essential checks
-            if is_problem_file:
-                logger.error(
-                    f"DEBUG: method_node missing 'name' or 'parameters'. Type: {type(method_node)} in class {class_name_for_log} in {current_file_path}")
-            # Return a dummy or raise, as we can't proceed
-            raise TypeError(f"Malformed method node in {class_name_for_log} in {current_file_path}")
+    def _parse_method_declaration(self, method_decl) -> Optional[ParsedMethod]:
+        """Parse a method declaration efficiently"""
+        if not hasattr(method_decl, 'name'):
+            return None
 
-        method_name = method_node.name
-        if is_problem_file:
-            logger.info(
-                f"Parsing method details for: {method_name} in class {class_name_for_log} in {current_file_path}")
+        # Handle constructors
+        is_constructor = isinstance(method_decl, javalang.tree.ConstructorDeclaration)
+        return_type = "void" if is_constructor else self._get_type_name(method_decl.return_type)
 
+        # Parse parameters
         parameters = []
-        if hasattr(method_node, 'parameters'):
-            for param_idx, param in enumerate(method_node.parameters):
-                if not hasattr(param, 'name') or not hasattr(param, 'type'):
-                    if is_problem_file:
-                        logger.error(
-                            f"DEBUG: parameter #{param_idx} in method {method_name} missing 'name' or 'type'. Type: {type(param)} in {current_file_path}")
-                    continue  # Skip this parameter
-                param_name = param.name
-                param_type_name = self._get_type_name(param.type)
-                parameters.append((param_type_name, param_name))
+        if hasattr(method_decl, 'parameters'):
+            for param in method_decl.parameters:
+                if hasattr(param, 'name') and hasattr(param, 'type'):
+                    param_type = self._get_type_name(param.type)
+                    parameters.append((param_type, param.name))
 
-        return_type_name = "void"
-        if hasattr(method_node, 'return_type') and method_node.return_type:  # method_node.return_type can be None
-            return_type_name = self._get_type_name(method_node.return_type)
+        # Parse throws clause
+        throws = []
+        if hasattr(method_decl, 'throws') and method_decl.throws:
+            throws = [getattr(t, 'name', str(t)) for t in method_decl.throws]
 
-        throws_list = []
-        if hasattr(method_node, 'throws') and method_node.throws:
-            for throw_idx, t_node in enumerate(method_node.throws):
-                if hasattr(t_node, 'name'):
-                    throws_list.append(t_node.name)
-                elif is_problem_file:
-                    logger.warning(
-                        f"DEBUG: throws node #{throw_idx} in method {method_name} missing 'name'. Type: {type(t_node)} in {current_file_path}")
-
-        # ... create ParsedMethod object ...
-        parsed_method = ParsedMethod(
-            name=method_name,
-            visibility=self._get_visibility(method_node.modifiers),
-            return_type=return_type_name,
+        return ParsedMethod(
+            name=method_decl.name,
+            return_type=return_type,
+            visibility=self._get_visibility(method_decl.modifiers),
             parameters=parameters,
-            throws=throws_list,
-            # ... other attributes
-            line_number=method_node.position.line if method_node.position and hasattr(method_node.position,
-                                                                                      'line') else 0
+            is_static='static' in method_decl.modifiers,
+            is_constructor=is_constructor,
+            line_number=getattr(method_decl.position, 'line', 0) if method_decl.position else 0,
+            has_javadoc=bool(method_decl.documentation),
+            throws=throws
         )
-        return parsed_method
-    def _get_visibility(self, modifiers: List[str]) -> str:
-        """Extract visibility modifier from modifiers list"""
-        visibility_modifiers = {'public', 'private', 'protected'}
-        for modifier in modifiers:
-            if modifier in visibility_modifiers:
-                return modifier
-        return 'package-private'
 
-    def _get_type_name(self, type_node: Any) -> str:
-        """Extract type name from type node"""
+    def _get_visibility(self, modifiers: List[str]) -> str:
+        """Extract visibility from modifiers list"""
+        for modifier in modifiers:
+            if modifier in ('public', 'private', 'protected'):
+                return modifier
+        return 'package'
+
+    def _get_type_name(self, type_node) -> str:
+        """
+        Extract type name from type node with caching.
+
+        This is called a lot, so we cache results for performance.
+        """
         if type_node is None:
             return "void"
-        elif hasattr(type_node, 'name'):
-            return type_node.name
-        elif hasattr(type_node, 'type') and hasattr(type_node, 'dimensions'):
-            # Array type
+
+        # Try cache first
+        type_key = str(type_node)
+        if type_key in self._type_name_cache:
+            return self._type_name_cache[type_key]
+
+        # Calculate type name
+        if hasattr(type_node, 'name'):
+            result = type_node.name
+        elif hasattr(type_node, 'type'):
+            # Handle arrays and generics
             base_type = self._get_type_name(type_node.type)
-            return base_type + "[]" * len(type_node.dimensions)
+            if hasattr(type_node, 'dimensions'):
+                result = base_type + "[]" * len(type_node.dimensions)
+            else:
+                result = base_type
         else:
-            return str(type_node)
+            result = str(type_node)
 
-    def _format_import(self, import_node: javalang.tree.Import) -> str:
-        """Format import statement"""
-        path = import_node.path
-        if import_node.static:
-            path = "static " + path
-        if import_node.wildcard:
-            path = path + ".*"
-        return path
+        # Cache and return
+        self._type_name_cache[type_key] = result
+        return result
 
-    def _extract_dependencies(self, parsed_file: ParsedFile, parsed_class: ParsedClass) -> List[str]:
-        """Extract dependencies for a class"""
-        dependencies = set()
+    def _analyze_dependencies(self, parsed_file: ParsedFile):
+        """Analyze dependencies for each class"""
+        for cls in parsed_file.classes:
+            deps = set()
 
-        # Add extends dependency
-        if parsed_class.extends:
-            dependencies.add(parsed_class.extends)
+            # Add inheritance dependencies
+            if cls.extends:
+                deps.add(cls.extends)
+            deps.update(cls.implements)
 
-        # Add implements dependencies
-        dependencies.update(parsed_class.implements)
+            # Add field type dependencies
+            for field in cls.fields:
+                deps.add(self._clean_type_name(field.type))
 
-        # Add field type dependencies
-        for field in parsed_class.fields:
-            # Simple extraction - could be improved
-            type_name = field.type.replace("[]", "").strip()
-            if type_name and not self._is_primitive(type_name):
-                dependencies.add(type_name)
+            # Add method parameter and return type dependencies
+            for method in cls.methods:
+                if method.return_type != "void":
+                    deps.add(self._clean_type_name(method.return_type))
 
-        # Add method parameter and return type dependencies
-        for method in parsed_class.methods:
-            if method.return_type and not self._is_primitive(method.return_type):
-                dependencies.add(method.return_type.replace("[]", "").strip())
+                for param_type, _ in method.parameters:
+                    deps.add(self._clean_type_name(param_type))
 
-            for param_type, _ in method.parameters:
-                type_name = param_type.replace("[]", "").strip()
-                if not self._is_primitive(type_name):
-                    dependencies.add(type_name)
+                # Add exception dependencies
+                deps.update(method.throws)
 
-        return list(dependencies)
+            # Filter out primitives and common types
+            cls.dependencies = {
+                dep for dep in deps
+                if dep and not self._is_primitive_or_common(dep)
+            }
 
-    def _is_primitive(self, type_name: str) -> bool:
-        """Check if a type is a Java primitive"""
-        primitives = {'boolean', 'byte', 'char', 'short', 'int', 'long', 'float', 'double', 'void'}
-        return type_name.lower() in primitives
+    def _clean_type_name(self, type_name: str) -> str:
+        """Clean up type name for dependency analysis"""
+        # Remove array brackets
+        cleaned = type_name.replace("[]", "")
 
-    def _build_package_hierarchy(self, packages: Dict[str, Package]) -> None:
-        """Build package hierarchy relationships"""
-        for pkg_name, package in packages.items():
-            if '.' in pkg_name:
-                parent_name = pkg_name.rsplit('.', 1)[0]
-                if parent_name in packages:
-                    packages[parent_name].subpackages.add(pkg_name)
+        # Remove generics
+        if '<' in cleaned:
+            cleaned = cleaned.split('<')[0]
+
+        return cleaned.strip()
+
+    def _is_primitive_or_common(self, type_name: str) -> bool:
+        """Check if type is primitive or very common (skip for dependencies)"""
+        primitives = {
+            'boolean', 'byte', 'char', 'short', 'int', 'long',
+            'float', 'double', 'void'
+        }
+
+        common_types = {
+            'String', 'Object', 'Integer', 'Long', 'Double', 'Float',
+            'Boolean', 'Character', 'List', 'Map', 'Set', 'Collection'
+        }
+
+        return type_name in primitives or type_name in common_types
+
+    def _build_package_hierarchy(self, packages: Set[str]) -> Dict[str, List[str]]:
+        """Build package hierarchy for visualization"""
+        hierarchy = {}
+
+        for package in packages:
+            parts = package.split('.')
+
+            # Build hierarchy level by level
+            for i in range(len(parts)):
+                parent = '.'.join(parts[:i]) if i > 0 else None
+                current = '.'.join(parts[:i+1])
+
+                if parent not in hierarchy:
+                    hierarchy[parent] = []
+
+                if current not in hierarchy[parent]:
+                    hierarchy[parent].append(current)
+
+        return hierarchy

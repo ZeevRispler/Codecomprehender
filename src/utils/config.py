@@ -1,97 +1,171 @@
-"""Configuration management for CodeComprehender"""
+"""
+Configuration management with all the efficiency knobs
+
+Includes settings for multiprocessing, async operations, and performance tuning.
+"""
 
 import os
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
-from dotenv import load_dotenv
-
 
 @dataclass
 class Config:
-    """Application configuration"""
+    """Configuration for CodeComprehender with performance options"""
 
-    # OpenAI settings
-    openai_api_key: Optional[str] = None
-    openai_base_url: Optional[str] = None
-    openai_model: str = "gpt-40"
-    temperature: float = 0.3
-    max_tokens: int = 1000
+    # OpenAI API settings
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"  # Fast and cheap for most use cases
+    openai_base_url: Optional[str] = None  # For custom endpoints
+    temperature: float = 0.3  # Consistent but not robotic
+    max_tokens: int = 1000  # Per request limit
 
-    # Comment generation settings
-    comment_style: str = "javadoc"
-    include_inline_comments: bool = True
+    # Performance and efficiency
+    max_workers: Optional[int] = None  # Auto-detect if None
+    batch_size: int = 10  # How many files per batch
+    max_concurrent_requests: int = 20  # Concurrent API calls per worker
+    request_timeout: float = 60.0  # Seconds
+    max_retries: int = 3  # For failed API calls
+
+    # File processing
+    file_suffix: str = "_commented"
+    encoding: str = "utf-8"
+    max_file_size_mb: float = 5.0  # Skip huge files
+
+    # What to generate
+    skip_comments: bool = False
+    generate_diagrams: bool = True
+
+    # Comment preferences
+    use_javadoc: bool = True
+    add_inline_comments: bool = True
+    include_file_comments: bool = True
     include_method_comments: bool = True
     include_class_comments: bool = True
 
-    # Architecture settings
+    # Files to skip (performance optimization)
+    ignore_patterns: List[str] = field(default_factory=lambda: [
+        "*Test.java", "*Tests.java", "*TestCase.java",
+        "*Generated*.java", "*generated*.java",
+        "package-info.java"
+    ])
+
+    # Directories to skip
+    ignore_dirs: List[str] = field(default_factory=lambda: [
+        "test", "tests", "target", "build", "out",
+        ".git", ".idea", ".vscode", "node_modules"
+    ])
+
+    # Diagram settings
     diagram_format: str = "png"
-    include_private_members: bool = False
-    max_depth: int = 3
+    max_classes_in_diagram: int = 50  # Keep diagrams readable
 
-    # File handling settings
-    file_suffix: str = "_commented"
-    ignore_patterns: List[str] = field(default_factory=lambda: ["*Test.java", "*Generated.java"])
-    encoding: str = "utf-8"
+    def __post_init__(self):
+        """Load from environment and validate settings"""
+        self._load_from_env()
+        self._validate_settings()
 
-    # Processing flags
-    comments_only: bool = False
-    architecture_only: bool = False
+    def _load_from_env(self):
+        """Load settings from environment variables"""
+        # API settings
+        if not self.openai_api_key:
+            self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
 
-    def __init__(self, config_file: Optional[str] = None):
-        """Initialize configuration from file or defaults"""
-        # Dataclass fields (like self.ignore_patterns, self.openai_model, etc.)
-        # are automatically initialized with their defined defaults or default_factory
-        # by the dataclass decorator before this __init__ is called,
-        # if you don't explicitly assign to them here first.
-        # However, since we have a custom __init__, we need to ensure
-        # all fields are properly initialized. The dataclass decorator does this
-        # by default if no __init__ is provided, or we can re-state them.
+        if os.getenv('OPENAI_MODEL'):
+            self.openai_model = os.getenv('OPENAI_MODEL')
 
-        # Re-stating defaults to be absolutely clear, matching dataclass definitions
-        self.openai_api_key: Optional[str] = None
-        self.openai_base_url: Optional[str] = None
-        self.openai_model: str = "gpt-4"
-        self.temperature: float = 0.3
-        self.max_tokens: int = 1000
-        self.comment_style: str = "javadoc"
-        self.include_inline_comments: bool = True
-        self.include_method_comments: bool = True
-        self.include_class_comments: bool = True
-        self.diagram_format: str = "png"
-        self.include_private_members: bool = False
-        self.max_depth: int = 3
-        self.file_suffix: str = "_commented"
-        # Ensure ignore_patterns is initialized from its default_factory
-        # The default_factory is: lambda: ["*Test.java", "*Generated.java"]
-        self.ignore_patterns: List[str] = ["*Test.java", "*Generated.java"]
-        self.encoding: str = "utf-8"
-        self.comments_only: bool = False
-        self.architecture_only: bool = False
+        if os.getenv('OPENAI_BASE_URL'):
+            self.openai_base_url = os.getenv('OPENAI_BASE_URL')
 
-        # Load environment variables from .env file
-        load_dotenv()
+        # Performance settings from env
+        if os.getenv('CODECOMPREHENDER_MAX_WORKERS'):
+            try:
+                self.max_workers = int(os.getenv('CODECOMPREHENDER_MAX_WORKERS'))
+            except ValueError:
+                pass
 
-        # Override with environment variables if they are set
-        env_api_key = os.getenv('OPENAI_API_KEY')
-        if env_api_key is not None:
-            self.openai_api_key = env_api_key
+        if os.getenv('CODECOMPREHENDER_BATCH_SIZE'):
+            try:
+                self.batch_size = int(os.getenv('CODECOMPREHENDER_BATCH_SIZE'))
+            except ValueError:
+                pass
 
-        env_base_url = os.getenv('OPENAI_BASE_URL')
-        if env_base_url is not None:
-            self.openai_base_url = env_base_url
+    def _validate_settings(self):
+        """Validate and adjust settings for efficiency"""
+        # Set reasonable limits
+        if self.max_workers and self.max_workers > 20:
+            self.max_workers = 20  # Don't go crazy with processes
 
-        # Override openai_model if set in environment (example)
-        env_openai_model = os.getenv('OPENAI_MODEL')
-        if env_openai_model is not None:
-            self.openai_model = env_openai_model
+        if self.batch_size > 50:
+            self.batch_size = 50  # Keep batches manageable
 
-        # Load from config file if provided, overriding current values
-        if config_file:
-            self._load_from_file(config_file)
+        if self.max_concurrent_requests > 50:
+            self.max_concurrent_requests = 50  # Don't overwhelm OpenAI
 
-    def _load_from_file(self, config_file: str) -> None:
+        # Temperature should be reasonable
+        if not 0.0 <= self.temperature <= 2.0:
+            self.temperature = 0.3
+
+        # File size limit
+        if self.max_file_size_mb <= 0:
+            self.max_file_size_mb = 5.0
+
+    @classmethod
+    def from_file(cls, config_path: Path) -> 'Config':
         """Load configuration from YAML file"""
-        with open(config_file, 'r') as f:
-            data = yaml.safe_load(f)
+        config = cls()
+
+        if not config_path.exists():
+            return config
+
+        try:
+            with open(config_path, 'r') as f:
+                data = yaml.safe_load(f)
+
+            # Update config with file values
+            for key, value in data.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+
+        except Exception as e:
+            print(f"Warning: Couldn't load config file {config_path}: {e}")
+
+        return config
+
+    def should_skip_file(self, file_path: Path) -> bool:
+        """Check if a file should be skipped for performance"""
+        # Check file size
+        try:
+            size_mb = file_path.stat().st_size / (1024 * 1024)
+            if size_mb > self.max_file_size_mb:
+                return True
+        except OSError:
+            pass
+
+        # Check filename patterns
+        filename = file_path.name
+        for pattern in self.ignore_patterns:
+            if file_path.match(pattern):
+                return True
+
+        # Check directory names
+        parts = [p.lower() for p in file_path.parts]
+        for ignore_dir in self.ignore_dirs:
+            if ignore_dir.lower() in parts:
+                return True
+
+        return False
+
+    def get_worker_count(self) -> int:
+        """Get optimal number of workers"""
+        if self.max_workers:
+            return self.max_workers
+
+        # Auto-detect based on CPU count
+        cpu_count = os.cpu_count() or 1
+
+        # Use half the cores + 1, but at least 2 and at most 8
+        workers = max(2, min(8, (cpu_count // 2) + 1))
+
+        return workers
