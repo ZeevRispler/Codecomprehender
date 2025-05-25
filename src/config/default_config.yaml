@@ -1,7 +1,7 @@
 # Default configuration for CodeComprehender
 
 # OpenAI settings
-openai_model: "gpt-40"
+openai_model: "gpt-40-mini"
 temperature: 0.3
 max_tokens: 1000
 

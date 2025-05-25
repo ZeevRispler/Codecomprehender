@@ -15,7 +15,7 @@ class Config:
     # OpenAI settings
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
-    openai_model: str = "gpt-4"
+    openai_model: str = "gpt-40"
     temperature: float = 0.3
     max_tokens: int = 1000
 
@@ -95,8 +95,3 @@ class Config:
         """Load configuration from YAML file"""
         with open(config_file, 'r') as f:
             data = yaml.safe_load(f)
-
-        # Update configuration with file data
-        for key, value in data.items():
-            if hasattr(self, key):
-                setattr(self, key, value)

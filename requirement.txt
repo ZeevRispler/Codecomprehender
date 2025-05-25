@@ -1,8 +1,8 @@
 click>=8.1.0
-openai>=1.0.0
+openai>=1.0.0 # Ensure a version that supports AsyncOpenAI and httpx by default
 javalang>=0.13.0
 graphviz>=0.20.0
-pyyaml>=6.0
-tqdm>=4.65.0
-colorama>=0.4.6
+PyYAML>=6.0
 python-dotenv>=1.0.0
+colorama>=0.4.6 # Kept for consistency with original requirements
+tqdm>=4.65.0 # Recommended for progress bars with new multiprocessing setup
