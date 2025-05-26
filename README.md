@@ -152,10 +152,6 @@ output/
 
 - Only works with GitHub repositories (public or private with access)
 - Some newer Java features (records, sealed classes) might be skipped
-- Generated comments should be reviewed before production use
 - Requires internet connection for OpenAI API calls
 - API costs scale with codebase size
 
----
-
-**Note:** This tool generates AI comments that should be reviewed before committing to production code.

@@ -1,5 +1,3 @@
-"""Logging configuration for CodeComprehender"""
-
 import logging
 import sys
 from typing import Optional

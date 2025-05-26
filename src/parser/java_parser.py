@@ -1,10 +1,3 @@
-"""
-Efficient Java source code parser
-
-Includes caching and optimizations for handling large codebases.
-Skips files that can't be parsed instead of crashing.
-"""
-
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field

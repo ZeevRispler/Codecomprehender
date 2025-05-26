@@ -14,7 +14,6 @@ from pathlib import Path
 import tempfile
 import shutil
 import asyncio
-from functools import partial
 
 import click
 from dotenv import load_dotenv
@@ -32,7 +31,7 @@ from .parser.java_parser import JavaParser
 from .commenter.comment_generator import CommentGenerator
 from .architecture.diagram_generator import DiagramGenerator
 
-# Load environment variables early
+# Load environment
 load_dotenv()
 
 # Figure out how many processes to use
@@ -281,10 +280,6 @@ class CodeComprehender:
             (str(java_file), str(project_path), str(output_path), config_dict)
             for java_file in java_files
         ]
-
-        # Process files in parallel
-        successful = 0
-        failed = 0
 
         with multiprocessing.Pool(processes=num_workers) as pool:
             if HAS_TQDM:

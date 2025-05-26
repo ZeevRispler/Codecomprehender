@@ -1,15 +1,7 @@
-"""
-AI-powered comment generation with async efficiency
-
-Handles multiple OpenAI API calls concurrently to speed up processing.
-Each file can have dozens of comments generated in parallel.
-"""
-
 import os
 import logging
 import re
-import asyncio
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -20,7 +12,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CommentTask:
     """Represents a single comment generation task"""
-    element_type: str  # "file", "class", "method", "field"
+    element_type: str
     prompt: str
     insert_line: int
     indent: str = ""
@@ -42,8 +34,8 @@ class CommentGenerator:
 
         self.client = AsyncOpenAI(
             api_key=self.config.openai_api_key,
-            timeout=60.0,  # Longer timeout for reliability
-            max_retries=3   # Retry failed requests
+            timeout=60.0,
+            max_retries=3
         )
 
         logger.debug(f"OpenAI client initialized (PID: {os.getpid()})")

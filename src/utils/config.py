@@ -1,13 +1,8 @@
-"""
-Minimal configuration for CodeComprehender
-"""
-
 import os
 from dataclasses import dataclass
 
 @dataclass
 class Config:
-    """Minimal config - just what we actually need"""
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     temperature: float = 0.3
